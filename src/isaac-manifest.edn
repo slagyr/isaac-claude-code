@@ -1,0 +1,6 @@
+{:id      :isaac.llm.claude
+ :version "0.1.0"
+ :factory isaac.module.protocol/module
+
+ :isaac.agent/llm-api
+ {:claude-cli {:factory isaac.llm.api.claude-cli/make}}}
