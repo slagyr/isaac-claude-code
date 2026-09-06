@@ -153,3 +153,23 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | arg              | value |
       | --print          |       |
       | --output-format  | json  |
+
+  @wip
+  Scenario: a CLI that exits before its first stream event falls back to the fence path with the stderr logged (isaac-nni3)
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind | payload |
+      | 1     | text | fenced  |
+    And the fake Claude Code exits 1 before streaming with stderr "Error: When using --print, --output-format=stream-json requires --verbose"
+    When the user sends "fallback" on session "main"
+    Then the response is "fenced"
+    And the log has entries matching:
+      | event                   | provider | reason           | stderr                           |
+      | :claude/driver-fallback | claude   | cli-start-failed | #"stream-json requires --verbose" |
+    And the fake Claude Code was invoked with:
+      | arg              | value       |
+      | --output-format  | stream-json |
+      | --verbose        |             |
+    And the fake Claude Code was invoked with:
+      | arg              | value |
+      | --print          |       |
+      | --output-format  | json  |
