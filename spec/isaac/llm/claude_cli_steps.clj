@@ -311,13 +311,15 @@
 (g/before-scenario
   (fn []
     (claude-cli/clear-stub!)
-    (claude-cli/clear-invocations!)))
+    (claude-cli/clear-invocations!)
+    (claude-cli/clear-fake-cli!)))
 
 (g/after-scenario
   (fn []
     (g/dissoc! :anthropic-api-key-cleared?)
     (claude-cli/clear-stub!)
-    (claude-cli/clear-invocations!)))
+    (claude-cli/clear-invocations!)
+    (claude-cli/clear-fake-cli!)))
 
 ;; endregion ^^^^^ Supporting steps ^^^^^
 
@@ -377,5 +379,68 @@
   isaac.llm.claude-cli-steps/credentials-file-exists)
 
 (defgiven "ANTHROPIC_API_KEY is not set in the environment" isaac.llm.claude-cli-steps/anthropic-api-key-unset)
+
+;; region ----- Fake Claude Code (isaac-5xn7) -----
+
+(defn- parse-script-table [table]
+  (mapv (fn [row]
+          (let [m (zipmap (:headers table) row)]
+            {:cycle   (parse-long (str (get m "cycle")))
+             :kind    (str (get m "kind"))
+             :payload (str (get m "payload"))}))
+        (:rows table)))
+
+(defn fake-claude-code-scripted [table]
+  (declare-module!)
+  (g/dissoc! :feature-config)
+  (claude-cli/clear-invocations!)
+  (claude-cli/clear-stub!)
+  (claude-cli/set-fake-cli! (parse-script-table table)))
+
+(defn fake-claude-code-fails-mcp-init []
+  (claude-cli/fail-mcp-init!))
+
+(defn fake-claude-code-received-on-stdin [table]
+  (session-steps/await-turn!)
+  (let [actual   (claude-cli/fake-cli-stdin)
+        expected (mapv (fn [row]
+                         (let [m (zipmap (:headers table) row)]
+                           {:role    (str (get m "role"))
+                            :content (str (get m "content"))}))
+                       (:rows table))]
+    (g/should= expected actual)))
+
+(defn fake-claude-code-was-terminated []
+  (session-steps/await-turn!)
+  (g/should (claude-cli/fake-cli-terminated?)))
+
+(defn fake-claude-code-invoked-with [table]
+  (session-steps/await-turn!)
+  (let [invocations (claude-cli/invocations)]
+    (g/should (seq invocations))
+    (g/should (some #(empty? (match-invocation-table % table)) invocations))))
+
+(defn turn-result-table [table]
+  (session-steps/await-turn!)
+  (let [result   (g/get :llm-result)
+        expected (into {} (map (fn [row]
+                                 (let [[k v] row]
+                                   [(keyword k) (edn/read-string v)]))
+                               (:rows table)))
+        actual   (cond-> {}
+                   (:status expected) (assoc :status (or (when-let [sr (:stopReason result)]
+                                                           (keyword sr))
+                                                         (some-> result :error)
+                                                         (when (:cancelled? result) :cancelled))))]
+    (g/should= expected actual)))
+
+(defgiven "a fake Claude Code on the path scripted with:" isaac.llm.claude-cli-steps/fake-claude-code-scripted)
+(defgiven "the fake Claude Code fails MCP initialization" isaac.llm.claude-cli-steps/fake-claude-code-fails-mcp-init)
+(defthen "the fake Claude Code received on stdin:" isaac.llm.claude-cli-steps/fake-claude-code-received-on-stdin)
+(defthen "the fake Claude Code was terminated" isaac.llm.claude-cli-steps/fake-claude-code-was-terminated)
+(defthen "the fake Claude Code was invoked with:" isaac.llm.claude-cli-steps/fake-claude-code-invoked-with)
+(defthen "the turn result is:" isaac.llm.claude-cli-steps/turn-result-table)
+
+;; endregion ^^^^^ Fake Claude Code ^^^^^
 
 ;; endregion ^^^^^ Routing ^^^^^

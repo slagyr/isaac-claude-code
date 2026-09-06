@@ -37,7 +37,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | name | crew    |
       | main | thinker |
 
-  @wip
   Scenario: a turn with one tool call persists the pair, the reply, and the final cycle's usage
     Given a fake Claude Code on the path scripted with:
       | cycle | kind     | payload                                                              |
@@ -59,7 +58,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | event             | provider | driver   |
       | :turn/loop-driver | claude   | provider |
 
-  @wip
   Scenario: a multi-cycle turn persists pairs in feed order
     Given a fake Claude Code on the path scripted with:
       | cycle | kind     | payload                                             |
@@ -80,7 +78,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | cycle-start | 2     |
       | cycle-start | 3     |
 
-  @wip
   Scenario: text and thinking deltas reach the comm in order; thinking persists as reckoning and stays out of the next prompt
     Given a fake Claude Code on the path scripted with:
       | cycle | kind     | payload                 |
@@ -92,9 +89,9 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | reckoning | weighing the options |
       | chatter   | here is my answer    |
     And session "main" has transcript matching:
-      | type      | message.role | message.content      |
-      | reckoning |              | weighing the options |
-      | message   | assistant    | here is my answer    |
+      | type      | message.role | message.content      | text                 |
+      | reckoning |              |                      | weighing the options |
+      | message   | assistant    | here is my answer    |                      |
     When the user sends "and again" on session "main"
     Then the fake Claude Code received on stdin:
       | role      | content                     |
@@ -102,14 +99,13 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | assistant | here is my answer           |
       | user      | and again                   |
 
-  @wip
   Scenario: cancel mid-loop terminates the process and the turn ends cancelled
     Given a fake Claude Code on the path scripted with:
       | cycle | kind     | payload                                             |
       | 1     | tool_use | {"name":"exec__run","input":{"command":"sleep 30"}} |
       | 2     | text     | never sent                                          |
-    And the turn is cancelled on session "main" after 1 tool call
     When the user sends "slow" on session "main"
+    And the turn is cancelled on session "main" after 1 tool call
     Then the turn result is:
       | key    | value      |
       | status | :cancelled |
@@ -121,7 +117,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | event                    | provider |
       | :claude/driver-terminated | claude   |
 
-  @wip
   Scenario: prior turns are replayed as text history before the live prompt
     Given a fake Claude Code on the path scripted with:
       | cycle | kind | payload |
@@ -144,7 +139,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | --strict-mcp-config       |             |
       | --no-session-persistence  |             |
 
-  @wip
   Scenario: an older CLI or a failed MCP init falls back to the fence path for that turn
     Given a fake Claude Code on the path scripted with:
       | cycle | kind | payload |

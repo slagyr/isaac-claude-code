@@ -15,8 +15,9 @@ Feature: Claude subscription provider via CLI shell-out
       | key        | value  |
       | log.output | memory |
     And the isaac EDN file "config/providers/claude.edn" exists with:
-      | path    | value  |
-      | command | claude |
+      | path              | value  |
+      | command           | claude |
+      | drives-tool-loop? | false  |
     And the isaac EDN file "config/models/sub-sonnet.edn" exists with:
       | path     | value        |
       | model    | sonnet       |

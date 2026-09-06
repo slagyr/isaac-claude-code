@@ -3,4 +3,14 @@
  :factory isaac.module.protocol/module
 
  :isaac.agent/llm-api
- {:claude-cli {:factory isaac.llm.api.claude-cli/make}}}
+ {:claude-cli {:factory isaac.llm.api.claude-cli/make}}
+
+ :isaac.agent/provider-template
+ {:claude {:template {:api                        "claude-cli"
+                      :auth                       "none"
+                      :command                    "claude"
+                      :stream-supports-tool-calls false
+                      :drives-tool-loop?          true}
+           :schema   {:drives-tool-loop?
+                      {:type        :boolean
+                       :description "When true, claude-cli drives the tool loop (LoopDriver)."}}}}}
