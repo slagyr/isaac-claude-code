@@ -1,5 +1,5 @@
 {:id      :isaac.llm.claude
- :version "0.1.6"
+ :version "0.1.7"
  :factory isaac.module.protocol/module
 
  :isaac.agent/llm-api
