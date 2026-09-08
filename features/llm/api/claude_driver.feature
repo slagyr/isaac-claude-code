@@ -279,7 +279,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | --print          |       |
       | --output-format  | json  |
 
-  @wip
   Scenario: the MCP config carries the running server's own URL and auth token (isaac-o2fh)
     The bridge must reach the server the driver runs inside of: the URL comes
     from the server's bound port (config :server :port, default 6674) and the
@@ -299,7 +298,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | argv                                                                              |
       | #"(?s).*mcp-bridge.*--turn.*--server http://127\.0\.0\.1:7912.*--token harbor-secret.*" |
 
-  @wip
   Scenario: a pending MCP server at init is not a failure — the turn proceeds and the tools arrive (isaac-o2fh)
     Claude Code emits its init event before the stdio server has answered;
     the isaac server shows "pending" for the first second of every turn.
@@ -318,6 +316,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
     And the log has entries matching:
       | event              | provider | servers                    |
       | :claude/mcp-status | claude   | #"(?s).*isaac.*pending.*" |
-    And the log does not have entries matching:
+    And the log has no entries matching:
       | event                   |
       | :claude/driver-fallback |

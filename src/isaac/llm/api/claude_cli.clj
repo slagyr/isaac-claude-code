@@ -8,6 +8,7 @@
     [isaac.llm.followup :as followup]
     [isaac.llm.prompt.builder :as prompt]
     [isaac.llm.tool-loop :as tool-loop]
+    [isaac.config.loader :as config-loader]
     [isaac.logger :as log]
     [isaac.mcp.turns :as mcp-turns]))
 
@@ -358,15 +359,20 @@
 (defn- subprocess-env []
   (dissoc (into {} (System/getenv)) "ANTHROPIC_API_KEY"))
 
+(defn- running-server []
+  (try
+    (config-loader/snapshot "mcp-bridge")
+    (catch Exception _ nil)))
+
 (defn- mcp-server-url [cfg]
   (or (:mcp-server-url cfg)
       (:server-url cfg)
-      (System/getenv "ISAAC_SERVER_URL")
-      "http://127.0.0.1:7733"))
+      (let [port (or (get-in (running-server) [:server :port]) 6674)]
+        (str "http://127.0.0.1:" port))))
 
 (defn- mcp-server-token [cfg]
   (or (:mcp-token cfg)
-      (System/getenv "ISAAC_SERVER_TOKEN")))
+      (get-in (running-server) [:server :auth :token])))
 
 (defn- write-mcp-config! [turn-id cfg]
   (let [file (java.io.File/createTempFile "isaac-mcp-" ".json")
@@ -652,8 +658,11 @@
   (let [servers (or (:mcp_servers init) (:mcpServers init) [])]
     (first (filter #(= "isaac" (str (:name %))) servers))))
 
-(defn- isaac-connected? [init]
-  (= "connected" (str (:status (isaac-server init)))))
+(defn- isaac-status [init]
+  (str (:status (isaac-server init))))
+
+(defn- isaac-failed? [init]
+  (= "failed" (isaac-status init)))
 
 (defn- log-mcp-status! [init]
   (when init
@@ -665,8 +674,9 @@
 (defn- mcp-failed? [init request]
   (and init
        (seq (:tools request))
-       (or (not (isaac-connected? init))
-           (zero? (mcp-tool-count init)))))
+       (or (isaac-failed? init)
+           (and (= "connected" (isaac-status init))
+                (zero? (mcp-tool-count init))))))
 
 (defn- reply-contains-fence? [result]
   (str/includes? (str (:out result)) tool-call-open))

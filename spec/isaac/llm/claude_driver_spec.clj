@@ -2,6 +2,7 @@
   (:require
     [cheshire.core :as json]
     [clojure.string :as str]
+    [isaac.config.loader :as config-loader]
     [isaac.llm.api.claude-cli :as sut]
     [isaac.llm.api.protocol :as api]
     [isaac.llm.tool-loop :as tool-loop]
@@ -532,4 +533,58 @@
         (should= :mcp-failed (:reason fallback))
         (should= 2 (count (sut/invocations)))
         (should= "stream-json" (nth first-argv (inc (.indexOf first-argv "--output-format"))))
-        (should= "json" (nth second-argv (inc (.indexOf second-argv "--output-format"))))))))
+        (should= "json" (nth second-argv (inc (.indexOf second-argv "--output-format")))))))
+
+  (it "writes --server from the running server's port and --token from its auth token"
+    (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "ok"}])
+    (with-redefs [config-loader/snapshot (constantly {:server {:port 7912 :auth {:token "harbor-secret"}}})]
+      (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})]
+        (api/chat api {:model "sonnet" :messages [{:role "user" :content "hi"}]})
+        (let [saved  (sut/last-mcp-config)
+              server (get-in saved [:body :mcpServers :isaac])
+              argv*  (str/join " " (concat [(:command server)] (:args server)))]
+          (should (re-find #"(?s).*mcp-bridge.*--turn.*--server http://127\.0\.0\.1:7912.*--token harbor-secret.*" argv*))))))
+
+  (it "provider :mcp-server-url and :mcp-token override the running server"
+    (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "ok"}])
+    (with-redefs [config-loader/snapshot (constantly {:server {:port 7912 :auth {:token "harbor-secret"}}})]
+      (let [api (sut/make "claude" {:command        "claude"
+                                    :drives-tool-loop? true
+                                    :mcp-server-url "http://127.0.0.1:9000"
+                                    :mcp-token      "override-token"})]
+        (api/chat api {:model "sonnet" :messages [{:role "user" :content "hi"}]})
+        (let [saved  (sut/last-mcp-config)
+              server (get-in saved [:body :mcpServers :isaac])
+              argv*  (str/join " " (concat [(:command server)] (:args server)))]
+          (should (re-find #"--server http://127\.0\.0\.1:9000" argv*))
+          (should (re-find #"--token override-token" argv*))
+          (should-not (re-find #"harbor-secret" argv*))))))
+
+  (it "defaults --server to 127.0.0.1:6674 when no server config is set"
+    (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "ok"}])
+    (with-redefs [config-loader/snapshot (constantly nil)]
+      (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})]
+        (api/chat api {:model "sonnet" :messages [{:role "user" :content "hi"}]})
+        (let [saved  (sut/last-mcp-config)
+              server (get-in saved [:body :mcpServers :isaac])
+              argv*  (str/join " " (concat [(:command server)] (:args server)))]
+          (should (re-find #"--server http://127\.0\.0\.1:6674" argv*))
+          (should-not (re-find #"--token" argv*))))))
+
+  (it "does not fall back when init reports isaac pending with zero tools"
+    (sut/set-fake-cli! [{:cycle 1 :kind "mcp_status" :payload "{\"mcp_servers\":[{\"name\":\"isaac\",\"status\":\"pending\"}],\"tools\":[]}"}
+                        {:cycle 1 :kind "tool_use" :payload "{\"name\":\"exec__run\",\"input\":{\"command\":\"echo hi\"}}"}
+                        {:cycle 1 :kind "text" :payload "hi came back"}])
+    (log/capture-logs
+      (let [api      (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+            res      (api/chat api {:model    "sonnet"
+                                    :messages [{:role "user" :content "run it"}]
+                                    :tools    [{:type "function" :function {:name "exec__run"}}]})
+            status   (first (filter #(= :claude/mcp-status (:event %)) @log/captured-logs))
+            fallback (first (filter #(= :claude/driver-fallback (:event %)) @log/captured-logs))]
+        (should= "hi came back" (get-in res [:message :content]))
+        (should-not-be-nil status)
+        (should (re-find #"(?s).*isaac.*pending.*" (str (:servers status))))
+        (should-be-nil fallback)
+        (should= 1 (count (sut/invocations)))
+        (should (seq (get-in res [:message :tool_calls])))))))
