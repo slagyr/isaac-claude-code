@@ -244,3 +244,39 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
     And the MCP config handed to the fake Claude Code names server "isaac" running:
       | argv                                   |
       | #"(?s).*mcp-bridge.*--turn.*[0-9a-f-]+.*" |
+
+  @wip
+  Scenario: a driven turn's system prompt carries no textual tool-call protocol (isaac-driver-fence)
+    On the driven path the tools are native MCP tools; teaching the fence
+    protocol makes Claude Code answer with a <tool_call> fence as text
+    (field smoke 2026-09-08 18:05Z, module 0.1.4) instead of calling the tool.
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind     | payload                                            |
+      | 1     | tool_use | {"name":"exec__run","input":{"command":"echo hi"}} |
+      | 2     | text     | hi came back                                       |
+    When the user sends "run it" on session "main"
+    Then the response is "hi came back"
+    And the fake Claude Code was invoked with:
+      | arg             | value                              |
+      | --system-prompt | #"(?s)(?!.*<tool_call>)(?!.*tool_call>).*" |
+    And session "main" has transcript matching:
+      | type       | message.role | name      |
+      | toolCall   |              | exec__run |
+      | toolResult |              |           |
+      | message    | assistant    |           |
+
+  @wip
+  Scenario: an init event that reports the isaac MCP server failed falls back and logs the server status (isaac-driver-fence)
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind       | payload                                                          |
+      | 1     | mcp_status | {"mcp_servers":[{"name":"isaac","status":"failed"}],"tools":[]}   |
+      | 1     | text       | I have no tools                                                  |
+    When the user sends "run it" on session "main"
+    Then the log has entries matching:
+      | event                   | provider | servers                             | tools |
+      | :claude/mcp-status      | claude   | #"(?s).*isaac.*failed.*"            | 0     |
+      | :claude/driver-fallback | claude   |                                     |       |
+    And the fake Claude Code was invoked with:
+      | arg              | value |
+      | --print          |       |
+      | --output-format  | json  |
