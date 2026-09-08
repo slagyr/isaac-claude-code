@@ -294,4 +294,87 @@
         (should= "stream-json" (nth first-argv (inc (.indexOf first-argv "--output-format"))))
         (should (<= 0 (.indexOf first-argv "--verbose")))
         (should= "json" (nth second-argv (inc (.indexOf second-argv "--output-format"))))
-        (should (<= 0 (.indexOf second-argv "--print")))))))
+        (should (<= 0 (.indexOf second-argv "--print"))))))
+
+  (it "assembles the reply from stream_event content_block_delta text_delta chunks and logs driver-exit"
+    (let [out (ndjson [{:type  "stream_event"
+                        :event {:type  "content_block_delta"
+                                :delta {:type "text_delta" :text "po"}}}
+                       {:type  "stream_event"
+                        :event {:type  "content_block_delta"
+                                :delta {:type "text_delta" :text "ng"}}}
+                       {:type    "message"
+                        :message {:role    "assistant"
+                                  :content [{:type "text" :text "pong"}]}}
+                       {:type        "result"
+                        :is_error    false
+                        :stop_reason "end_turn"
+                        :usage       (usage 2 3289 5473)}])]
+      (sut/set-stub! (constantly {:exit 0 :out out :err ""}))
+      (log/capture-logs
+        (let [api      (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+              res      (api/chat api {:model "sonnet" :messages [{:role "user" :content "Reply with exactly: pong"}]})
+              exit-log (first (filter #(= :claude/driver-exit (:event %)) @log/captured-logs))]
+          (should= "pong" (get-in res [:message :content]))
+          (should= 2 (:input-tokens (:usage res)))
+          (should= 3289 (:cache-read (:usage res)))
+          (should= 5473 (:cache-write (:usage res)))
+          (should-not-be-nil exit-log)
+          (should= "claude" (:provider exit-log))
+          (should= 0 (:exit-code exit-log))
+          (should= true (:result-event exit-log))))))
+
+  (it "fake CLI emits stream_event text_delta shapes for kind text_delta"
+    (sut/set-fake-cli! [{:cycle 1 :kind "text_delta" :payload "po"}
+                        {:cycle 1 :kind "text_delta" :payload "ng"}
+                        {:cycle 1 :kind "usage" :payload "{\"input_tokens\":2,\"cache_read_input_tokens\":3289,\"cache_creation_input_tokens\":5473}"}])
+    (let [result (#'sut/simulate-fake-cli! ["claude" "--print" "--output-format" "stream-json" "--verbose"] "hi")
+          events (map #(json/parse-string % true) (str/split-lines (:out result)))]
+      (should= 0 (:exit result))
+      (should (some #(= "stream_event" (:type %)) events))
+      (should (some #(= "text_delta" (get-in % [:event :delta :type])) events))
+      (should (some #(= "message" (:type %)) events))
+      (should (some #(= "result" (:type %)) events))
+      (should= false (:is_error (last (filter #(= "result" (:type %)) events))))))
+
+  (it "fake CLI emits an is_error result for kind error_result"
+    (sut/set-fake-cli! [{:cycle 1 :kind "error_result" :payload "MCP server \"isaac\" failed to connect"}])
+    (let [result (#'sut/simulate-fake-cli! ["claude" "--print" "--output-format" "stream-json" "--verbose"] "hi")
+          events (map #(json/parse-string % true) (str/split-lines (:out result)))
+          result-evt (last (filter #(= "result" (:type %)) events))]
+      (should= true (:is_error result-evt))
+      (should (str/includes? (str (:result result-evt)) "failed to connect"))))
+
+  (it "falls back to the fence path with :cli-error when the result event has is_error"
+    (sut/set-fake-cli! [{:cycle 1 :kind "error_result" :payload "MCP server \"isaac\" failed to connect"}])
+    (log/capture-logs
+      (let [api         (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+            _           (api/chat api {:model "sonnet" :messages [{:role "user" :content "fallback please"}]})
+            exit-log    (first (filter #(= :claude/driver-exit (:event %)) @log/captured-logs))
+            fallback    (first (filter #(= :claude/driver-fallback (:event %)) @log/captured-logs))
+            first-argv  (:argv (first (sut/invocations)))
+            second-argv (:argv (second (sut/invocations)))]
+        (should-not-be-nil exit-log)
+        (should-not-be-nil fallback)
+        (should= "claude" (:provider fallback))
+        (should= :cli-error (:reason fallback))
+        (should (re-find #"(?s).*failed to connect.*" (str (:stderr fallback))))
+        (should= 2 (count (sut/invocations)))
+        (should= "stream-json" (nth first-argv (inc (.indexOf first-argv "--output-format"))))
+        (should= "json" (nth second-argv (inc (.indexOf second-argv "--output-format"))))
+        (should (<= 0 (.indexOf second-argv "--print"))))))
+
+  (it "falls back to the fence path with :cli-error when the process exits with no result event"
+    (sut/set-stub!
+      (constantly {:exit 0
+                   :out  (ndjson [{:type  "stream_event"
+                                   :event {:type  "content_block_delta"
+                                           :delta {:type "text_delta" :text ""}}}])
+                   :err  "MCP server \"isaac\" failed to connect"}))
+    (log/capture-logs
+      (let [api      (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+            _        (api/chat api {:model "sonnet" :messages [{:role "user" :content "fallback please"}]})
+            fallback (first (filter #(= :claude/driver-fallback (:event %)) @log/captured-logs))]
+        (should-not-be-nil fallback)
+        (should= :cli-error (:reason fallback))
+        (should (re-find #"(?s).*failed to connect.*" (str (:stderr fallback))))))))

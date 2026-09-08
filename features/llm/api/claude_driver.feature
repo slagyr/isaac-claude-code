@@ -173,7 +173,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | --print          |       |
       | --output-format  | json  |
 
-  @wip
   Scenario: text that arrives only as content_block_delta stream events becomes the reply (isaac-0lyh)
     Claude Code 2.1.236 with --include-partial-messages emits the reply as
     stream_event/content_block_delta/text_delta chunks, then message events,
@@ -196,7 +195,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | event               | provider | exit-code | result-event |
       | :claude/driver-exit | claude   | 0         | true         |
 
-  @wip
   Scenario: a result event with is_error, or an exit with no result event, falls back with the CLI's stderr logged
     Given a fake Claude Code on the path scripted with:
       | cycle | kind         | payload                               |

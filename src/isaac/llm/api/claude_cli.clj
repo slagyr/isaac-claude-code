@@ -367,32 +367,59 @@
     payload))
 
 (defn- cycle-events [rows]
-  (let [text     (some #(when (= "text" (:kind %)) (:payload %)) rows)
-        thinking (keep #(when (= "thinking" (:kind %)) (:payload %)) rows)
-        tools    (keep #(when (= "tool_use" (:kind %))
-                          (parse-payload "tool_use" (:payload %)))
-                       rows)
-        usage    (some #(when (= "usage" (:kind %))
-                          (parse-payload "usage" (:payload %)))
-                       rows)]
-    (concat
-      (map (fn [t]
-             {:type  "content_block_delta"
-              :delta {:type "thinking_delta" :thinking t}})
-           thinking)
-      (map (fn [p]
-             {:type    "assistant"
-              :message {:content [{:type  "tool_use"
-                                   :id    (or (:id p) (str (java.util.UUID/randomUUID)))
-                                   :name  (:name p)
-                                   :input (or (:input p) (:arguments p) {})}]}})
-           tools)
-      (when text
-        [{:type    "assistant"
-          :message {:content [{:type "text" :text text}]}}])
-      [{:type   "result"
-        :result (or text "")
-        :usage  (or usage {})}])))
+  (let [text-deltas  (mapv :payload (filter #(= "text_delta" (:kind %)) rows))
+        error-result (some #(when (= "error_result" (:kind %)) (:payload %)) rows)
+        text         (some #(when (= "text" (:kind %)) (:payload %)) rows)
+        thinking     (keep #(when (= "thinking" (:kind %)) (:payload %)) rows)
+        tools        (keep #(when (= "tool_use" (:kind %))
+                              (parse-payload "tool_use" (:payload %)))
+                           rows)
+        usage        (some #(when (= "usage" (:kind %))
+                              (parse-payload "usage" (:payload %)))
+                           rows)]
+    (cond
+      error-result
+      [{:type     "result"
+        :is_error true
+        :result   error-result
+        :usage    (or usage {})}]
+
+      (seq text-deltas)
+      (let [joined (apply str text-deltas)]
+        (concat
+          (map (fn [t]
+                 {:type  "stream_event"
+                  :event {:type  "content_block_delta"
+                          :delta {:type "text_delta" :text t}}})
+               text-deltas)
+          [{:type    "message"
+            :message {:role    "assistant"
+                      :content [{:type "text" :text joined}]}}]
+          [{:type        "result"
+            :is_error    false
+            :stop_reason "end_turn"
+            :result      joined
+            :usage       (or usage {})}]))
+
+      :else
+      (concat
+        (map (fn [t]
+               {:type  "content_block_delta"
+                :delta {:type "thinking_delta" :thinking t}})
+             thinking)
+        (map (fn [p]
+               {:type    "assistant"
+                :message {:content [{:type  "tool_use"
+                                     :id    (or (:id p) (str (java.util.UUID/randomUUID)))
+                                     :name  (:name p)
+                                     :input (or (:input p) (:arguments p) {})}]}})
+             tools)
+        (when text
+          [{:type    "assistant"
+            :message {:content [{:type "text" :text text}]}}])
+        [{:type   "result"
+          :result (or text "")
+          :usage  (or usage {})}]))))
 
 (defn- stream-json-without-verbose? [arg-map]
   (and (= "stream-json" (get arg-map "--output-format"))
@@ -465,6 +492,50 @@
 
 (declare claude-loop-driver)
 
+(defn- stream-json-event [line]
+  (when (seq (str/trim line))
+    (try
+      (json/parse-string line true)
+      (catch Exception _ nil))))
+
+(defn- parse-stream-events [out]
+  (->> (str/split-lines (or out ""))
+       (keep stream-json-event)
+       vec))
+
+(defn- unwrap-stream-event [event]
+  (if (and (= "stream_event" (:type event)) (map? (:event event)))
+    (assoc (:event event) :_envelope event)
+    event))
+
+(defn- event-type-counts [events]
+  (->> events
+       (keep :type)
+       (map str)
+       frequencies))
+
+(defn- stderr-head [err]
+  (let [s (str/trim (or err ""))]
+    (if (> (count s) 500)
+      (subs s 0 500)
+      s)))
+
+(defn- result-event? [event]
+  (= "result" (:type event)))
+
+(defn- result-error? [event]
+  (boolean (or (true? (:is_error event))
+               (= true (:isError event)))))
+
+(defn- log-driver-exit! [result events]
+  (let [result-evt (last (filter result-event? events))]
+    (log/info :claude/driver-exit
+              :provider "claude"
+              :exit-code (or (:exit result) 0)
+              :result-event (boolean result-evt)
+              :stderr (not-empty (stderr-head (:err result)))
+              :events (event-type-counts events))))
+
 (defn- ensure-driver! [cfg]
   (when (:drives-tool-loop? cfg)
     (tool-loop/install-provider-driver! claude-loop-driver)))
@@ -480,6 +551,26 @@
   (and (not (zero? (:exit result)))
        (str/blank? (:out result))))
 
+(defn- cli-error? [result]
+  (let [events (parse-stream-events (:out result))
+        result-evt (last (filter result-event? events))]
+    (or (and result-evt (result-error? result-evt))
+        (nil? result-evt))))
+
+(defn- fence-fallback! [cfg request result reason]
+  (when (compare-and-set! fallback-logged?* false true)
+    (log/info :claude/driver-fallback
+              :provider "claude"
+              :reason reason
+              :stderr (let [events (parse-stream-events (:out result))
+                            result-evt (last (filter result-event? events))]
+                        (or (not-empty (stderr-head (:err result)))
+                            (when result-evt (str (:result result-evt)))
+                            ""))))
+  (reset! fail-mcp-init?* true)
+  (reset! exit-before-stream* {:exit (:exit result) :err (:err result)})
+  (fence-retry! cfg request))
+
 (defn- invoke! [cfg request streaming?]
   (ensure-driver! cfg)
   (let [streaming? (and streaming? (not @fail-mcp-init?*) (not @exit-before-stream*))
@@ -491,52 +582,51 @@
     (install-cancel-hook! cfg)
     (capture-stdin! prompt)
     (record-invocation! {:argv argv :env env :in prompt})
-    (let [result (run-process! argv env prompt)]
-      (if (and (:drives-tool-loop? cfg)
-               (not @fail-mcp-init?*)
-               (cli-start-failed? result))
-        (do
-          (when (compare-and-set! fallback-logged?* false true)
-            (log/info :claude/driver-fallback
-                      :provider "claude"
-                      :reason :cli-start-failed
-                      :stderr (:err result)))
-          (reset! fail-mcp-init?* true)
-          (reset! exit-before-stream* {:exit (:exit result) :err (:err result)})
-          (fence-retry! cfg request))
-        result))))
+    (let [result (run-process! argv env prompt)
+          events (parse-stream-events (:out result))]
+      (when (and (:drives-tool-loop? cfg) (not @fail-mcp-init?*))
+        (log-driver-exit! result events))
+      (cond
+        (and (:drives-tool-loop? cfg)
+             (not @fail-mcp-init?*)
+             (cli-start-failed? result))
+        (fence-fallback! cfg request result :cli-start-failed)
 
-(defn- stream-json-event [line]
-  (when (seq (str/trim line))
-    (try
-      (json/parse-string line true)
-      (catch Exception _ nil))))
+        (and (:drives-tool-loop? cfg)
+             (not @fail-mcp-init?*)
+             (cli-error? result))
+        (fence-fallback! cfg request result :cli-error)
+
+        :else result))))
 
 (defn- stream-json-delta-text [event]
-  (cond
-    (get-in event [:delta :text])
-    (get-in event [:delta :text])
+  (let [event (unwrap-stream-event event)
+        delta (:delta event)]
+    (cond
+      (and (map? delta)
+           (or (nil? (:type delta))
+               (= "text_delta" (:type delta)))
+           (string? (:text delta)))
+      (:text delta)
 
-    (and (get-in event [:delta :type])
-         (= "thinking_delta" (get-in event [:delta :type])))
-    nil
+      (and (get-in event [:delta :type])
+           (= "thinking_delta" (get-in event [:delta :type])))
+      nil
 
-    (get-in event [:content_block_delta :delta :text])
-    (get-in event [:content_block_delta :delta :text])
+      (get-in event [:content_block_delta :delta :text])
+      (get-in event [:content_block_delta :delta :text])
 
-    (get-in event [:message :content 0 :text])
-    (get-in event [:message :content 0 :text])
+      (string? (:text event))
+      (:text event)
 
-    (string? (:text event))
-    (:text event)
-
-    :else nil))
+      :else nil)))
 
 (defn- stream-json-delta-thinking [event]
-  (or (when (= "thinking_delta" (get-in event [:delta :type]))
-        (get-in event [:delta :thinking]))
-      (get-in event [:delta :thinking])
-      (get-in event [:content_block_delta :delta :thinking])))
+  (let [event (unwrap-stream-event event)]
+    (or (when (= "thinking_delta" (get-in event [:delta :type]))
+          (get-in event [:delta :thinking]))
+        (get-in event [:delta :thinking])
+        (get-in event [:content_block_delta :delta :thinking]))))
 
 (defn- content-tool-calls [content]
   (when (vector? content)
@@ -561,43 +651,46 @@
                (if-let [t (when event (stream-json-delta-thinking event))]
                  (conj reasoning t)
                  reasoning)
-               (if (= "result" (:type event))
+               (if (and event (result-event? event))
                  (normalize-usage (:usage event))
                  usage)
                more))
       {:deltas deltas :reasoning reasoning :usage usage})))
 
 (defn- parse-stream-json-response [out model]
-  (let [lines      (str/split-lines (or out ""))
+  (let [events     (parse-stream-events out)
         tool-calls (atom [])
         texts      (atom [])
         reasoning  (atom [])
-        usage      (atom (zero-usage))]
-    (doseq [line lines]
-      (when-let [event (stream-json-event line)]
-        (when-let [t (stream-json-delta-thinking event)]
-          (swap! reasoning conj t))
-        (when-let [content (get-in event [:message :content])]
-          (when (vector? content)
-            (doseq [b content]
-              (case (:type b)
-                "text" (when (:text b) (swap! texts conj (:text b)))
-                "tool_use" (swap! tool-calls conj {:id        (or (:id b) (str (java.util.UUID/randomUUID)))
-                                                   :name      (:name b)
-                                                   :arguments (or (:input b) (:arguments b) {})
-                                                   :raw       b})
-                nil))))
-        (when-let [t (and (not (get-in event [:message :content]))
-                          (stream-json-delta-text event))]
-          (swap! texts conj t))
-        (when-let [tcs (content-tool-calls (get-in event [:content]))]
-          (swap! tool-calls into tcs))
-        (when (= "result" (:type event))
-          (reset! usage (normalize-usage (:usage event)))
-          (when (and (empty? @texts) (seq (str (:result event))))
-            (swap! texts conj (str (:result event)))))))
-    (let [text (str/join @texts)
-          tcs  @tool-calls
+        usage      (atom (zero-usage))
+        saw-delta? (atom false)]
+    (doseq [event events]
+      (when-let [t (stream-json-delta-thinking event)]
+        (swap! reasoning conj t))
+      (when-let [t (stream-json-delta-text event)]
+        (reset! saw-delta? true)
+        (swap! texts conj t))
+      (when-let [content (get-in (unwrap-stream-event event) [:message :content])]
+        (when (vector? content)
+          (doseq [b content]
+            (case (:type b)
+              "tool_use" (swap! tool-calls conj {:id        (or (:id b) (str (java.util.UUID/randomUUID)))
+                                                 :name      (:name b)
+                                                 :arguments (or (:input b) (:arguments b) {})
+                                                 :raw       b})
+              "text" (when (and (not @saw-delta?) (:text b))
+                       (swap! texts conj (:text b)))
+              nil))))
+      (when-let [tcs (content-tool-calls (get-in event [:content]))]
+        (swap! tool-calls into tcs))
+      (when (result-event? event)
+        (reset! usage (normalize-usage (:usage event)))
+        (when (and (empty? @texts)
+                   (not (result-error? event))
+                   (seq (str (:result event))))
+          (swap! texts conj (str (:result event))))))
+    (let [text  (str/join @texts)
+          tcs   @tool-calls
           think (str/join @reasoning)]
       (cond-> {:message    (cond-> {:role "assistant" :content text}
                              (seq tcs) (assoc :tool_calls tcs))
