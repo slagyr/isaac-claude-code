@@ -387,7 +387,7 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | message    | assistant    | hi came back    |
 
   @wip
-  Scenario: the final text appears three times in the real stream and is used exactly once (isaac-driver-thrice)
+  Scenario: the final text appears three times in the real stream and is used exactly once (isaac-g2z8)
     Claude Code 2.1 emits the reply as text_delta chunks, then an assistant
     message event carrying the full text, then a result event whose "result"
     field carries it again. Field runs: 0.1.6 doubled it (deltas + message),
