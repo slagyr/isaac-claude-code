@@ -385,3 +385,22 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | toolCall   |              |                 |
       | toolResult |              | #"(?s).*hi.*"   |
       | message    | assistant    | hi came back    |
+
+  @wip
+  Scenario: the final text appears three times in the real stream and is used exactly once (isaac-driver-thrice)
+    Claude Code 2.1 emits the reply as text_delta chunks, then an assistant
+    message event carrying the full text, then a result event whose "result"
+    field carries it again. Field runs: 0.1.6 doubled it (deltas + message),
+    0.1.8 doubled it again (message + result). One source, once — prefer the
+    result event's text when present.
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind         | payload      |
+      | 1     | text_delta   | mcp-loop     |
+      | 1     | text_delta   | -ok          |
+      | 1     | text         | mcp-loop-ok  |
+      | 1     | result_text  | mcp-loop-ok  |
+    When the user sends "Reply with exactly: mcp-loop-ok" on session "main"
+    Then the response is "mcp-loop-ok"
+    And session "main" has transcript matching:
+      | type    | message.role | message.content |
+      | message | assistant    | mcp-loop-ok     |
