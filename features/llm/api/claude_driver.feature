@@ -363,3 +363,26 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | 1     | text        | mcp-loop-ok  |
     When the user sends "Reply with exactly: mcp-loop-ok" on session "main"
     Then the response is "mcp-loop-ok"
+
+  @wip
+  Scenario: text before a tool call is an aside, not part of the reply (isaac-driver-aside)
+    Field run 2026-09-08 22:09Z (module 0.1.7): the model said "OK", called
+    the tool, then answered "mcp-loop-ok"; the reply arrived as "OKmcp-loop-ok".
+    Per scuttlebutt, text followed by tools resolves into an aside; only the
+    final cycle's text is the reply.
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind     | payload                                                            |
+      | 1     | text     | OK                                                                 |
+      | 1     | tool_use | {"name":"mcp__isaac__exec__run","input":{"command":"echo hi"}}     |
+      | 2     | text     | hi came back                                                       |
+    When the user sends "run it" on session "main" via memory comm
+    Then the response is "hi came back"
+    And the memory comm has events matching:
+      | event | text         |
+      | aside | OK           |
+      | reply | hi came back |
+    And session "main" has transcript matching:
+      | type       | message.role | message.content |
+      | toolCall   |              |                 |
+      | toolResult |              | #"(?s).*hi.*"   |
+      | message    | assistant    | hi came back    |
