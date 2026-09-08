@@ -52,6 +52,12 @@
   (it "does not install stream-json input when drives-tool-loop? is omitted"
     (let [api (sut/make "claude" {:command "claude"})]
       (should-not (:drives-tool-loop? (api/config api)))
+      (sut/set-stub!
+        (constantly {:exit 0
+                     :out  (ndjson [{:type "assistant"
+                                     :message {:content [{:type "text" :text "ok"}]}}
+                                    (result-line "ok" (usage 10 0 0))])
+                     :err  ""}))
       (api/chat api {:model "sonnet" :messages [{:role "user" :content "hi"}]})
       (let [argv (:argv (first (sut/invocations)))]
         (should (neg? (.indexOf argv "--input-format"))))))
