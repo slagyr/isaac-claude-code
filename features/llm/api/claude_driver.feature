@@ -320,7 +320,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | event                   |
       | :claude/driver-fallback |
 
-  @wip
   Scenario: an MCP tool call is executed once, under isaac's tool name, and recorded from the bridge's result (isaac-1tmw)
     Claude Code names MCP tools mcp__<server>__<tool>. The bridge executes the
     call through the turn registry; the driver must record that pair under
@@ -338,10 +337,9 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | toolCall   |              | exec__run |                 |
       | toolResult |              |           | #"(?s).*hi.*"   |
       | message    | assistant    |           | hi came back    |
-    And session "main" has 4 transcript entries
+    And session "main" has 5 transcript entries
     And the fake Claude Code was invoked exactly once
 
-  @wip
   Scenario: one CLI process serves the whole turn — tool cycles do not respawn Claude Code (isaac-1tmw)
     Given a fake Claude Code on the path scripted with:
       | cycle | kind     | payload                                                            |
@@ -355,7 +353,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | event               | provider | events                          |
       | :claude/driver-exit | claude   | #"(?s).*\"result\" 1.*"          |
 
-  @wip
   Scenario: the reply is assembled from the stream once — deltas and the trailing assistant message are the same text, not concatenated (isaac-1tmw)
     The real CLI emits the reply as text_delta chunks AND repeats it in the
     trailing assistant message event; the driver must not append both.

@@ -454,6 +454,10 @@
     (g/should (seq invocations))
     (g/should (some #(empty? (match-invocation-table % table)) invocations))))
 
+(defn fake-claude-code-invoked-exactly-once []
+  (session-steps/await-turn!)
+  (g/should= 1 (count (claude-cli/invocations))))
+
 (defn turn-result-table [table]
   (session-steps/await-turn!)
   (let [result   (g/get :llm-result)
@@ -478,6 +482,7 @@
   isaac.llm.claude-cli-steps/mcp-config-names-server-running)
 (defthen "the fake Claude Code was terminated" isaac.llm.claude-cli-steps/fake-claude-code-was-terminated)
 (defthen "the fake Claude Code was invoked with:" isaac.llm.claude-cli-steps/fake-claude-code-invoked-with)
+(defthen "the fake Claude Code was invoked exactly once" isaac.llm.claude-cli-steps/fake-claude-code-invoked-exactly-once)
 (defthen "the turn result is:" isaac.llm.claude-cli-steps/turn-result-table)
 
 ;; endregion ^^^^^ Fake Claude Code ^^^^^

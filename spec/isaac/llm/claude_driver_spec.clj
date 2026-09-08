@@ -64,21 +64,12 @@
 
   (it "drives one tool_use cycle then a text result through the drive tool-fn"
     (let [tool-runs (atom [])
-          on-cycle  (atom [])
-          calls*    (atom 0)
-          events    [(ndjson [{:type "assistant"
-                               :message {:content [{:type "tool_use"
-                                                    :id   "call_1"
-                                                    :name "exec__run"
-                                                    :input {:command "echo hi"}}]}}
-                              (result-line "" (usage 200 50 10))])
-                     (ndjson [{:type "assistant"
-                               :message {:content [{:type "text" :text "hi came back"}]}}
-                              (result-line "hi came back" (usage 260 60 0))])]]
-      (sut/set-stub!
-        (fn [_]
-          (let [n (swap! calls* inc)]
-            {:exit 0 :out (nth events (dec n) (last events)) :err ""})))
+          on-cycle  (atom [])]
+      (sut/set-fake-cli!
+        [{:cycle 1 :kind "tool_use" :payload "{\"name\":\"exec__run\",\"input\":{\"command\":\"echo hi\"}}"}
+         {:cycle 1 :kind "usage" :payload "{\"input_tokens\":200,\"cache_read_input_tokens\":50,\"cache_creation_input_tokens\":10}"}
+         {:cycle 2 :kind "text" :payload "hi came back"}
+         {:cycle 2 :kind "usage" :payload "{\"input_tokens\":260,\"cache_read_input_tokens\":60,\"cache_creation_input_tokens\":0}"}])
       (let [api    (sut/make "claude" {:command "claude" :drives-tool-loop? true})
             result (tool-loop/run
                      (fn [req] (api/chat api req))
@@ -90,6 +81,7 @@
                      {:api      api
                       :on-cycle (fn [phase n _] (swap! on-cycle conj [phase n]))})]
         (should= [["exec__run" {:command "echo hi"}]] @tool-runs)
+        (should= 1 (count (sut/invocations)))
         (should= "hi came back" (get-in result [:response :message :content]))
         (let [u (get-in result [:response :usage])]
           (should= 320 (+ (:input-tokens u) (:cache-read u) (:cache-write u))))
@@ -97,29 +89,20 @@
         (should= [[:start 1] [:end 1] [:start 2] [:end 2]] @on-cycle))))
 
   (it "still folds cache into turn token-counts when the global driver was cleared after make"
-    (let [calls* (atom 0)
-          events [(ndjson [{:type    "assistant"
-                            :message {:content [{:type  "tool_use"
-                                                 :id    "call_1"
-                                                 :name  "exec__run"
-                                                 :input {:command "echo hi"}}]}}
-                           (result-line "" (usage 200 50 10))])
-                  (ndjson [{:type    "assistant"
-                            :message {:content [{:type "text" :text "hi came back"}]}}
-                           (result-line "hi came back" (usage 260 60 0))])]]
-      (sut/set-stub!
-        (fn [_]
-          (let [n (swap! calls* inc)]
-            {:exit 0 :out (nth events (dec n) (last events)) :err ""})))
-      (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})]
-        (tool-loop/clear-provider-driver!)
-        (let [result (tool-loop/run
-                       (fn [req] (api/chat api req))
-                       (fn [req _resp _tcs _trs] (:messages req))
-                       {:model "sonnet" :messages [{:role "user" :content "run it"}]}
-                       (fn [_name _args] "hi\n")
-                       {:api api})]
-          (should= 580 (:input-tokens (:token-counts result)))))))
+    (sut/set-fake-cli!
+      [{:cycle 1 :kind "tool_use" :payload "{\"name\":\"exec__run\",\"input\":{\"command\":\"echo hi\"}}"}
+       {:cycle 1 :kind "usage" :payload "{\"input_tokens\":200,\"cache_read_input_tokens\":50,\"cache_creation_input_tokens\":10}"}
+       {:cycle 2 :kind "text" :payload "hi came back"}
+       {:cycle 2 :kind "usage" :payload "{\"input_tokens\":260,\"cache_read_input_tokens\":60,\"cache_creation_input_tokens\":0}"}])
+    (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})]
+      (tool-loop/clear-provider-driver!)
+      (let [result (tool-loop/run
+                     (fn [req] (api/chat api req))
+                     (fn [req _resp _tcs _trs] (:messages req))
+                     {:model "sonnet" :messages [{:role "user" :content "run it"}]}
+                     (fn [_name _args] "hi\n")
+                     {:api api})]
+        (should= 580 (:input-tokens (:token-counts result))))))
 
   (it "does not treat a fake CLI as LoopDriver without drives-tool-loop?"
     (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "ok"}])
@@ -127,30 +110,21 @@
       (should-not (:drives-tool-loop? (api/config api)))))
 
   (it "survives augment-provider remake that drops drives-tool-loop?"
-    (let [calls* (atom 0)
-          events [(ndjson [{:type    "assistant"
-                            :message {:content [{:type  "tool_use"
-                                                 :id    "call_1"
-                                                 :name  "exec__run"
-                                                 :input {:command "echo hi"}}]}}
-                           (result-line "" (usage 200 50 10))])
-                  (ndjson [{:type    "assistant"
-                            :message {:content [{:type "text" :text "hi came back"}]}}
-                           (result-line "hi came back" (usage 260 60 0))])]]
-      (sut/set-stub!
-        (fn [_]
-          (let [n (swap! calls* inc)]
-            {:exit 0 :out (nth events (dec n) (last events)) :err ""})))
-      (sut/make "claude" {:command "claude" :api "claude-cli" :drives-tool-loop? true})
-      (let [api    (sut/make "claude" {:session-key "main" :root "/tmp" :context-window 32768})
-            result (tool-loop/run
-                     (fn [req] (api/chat api req))
-                     (fn [req _resp _tcs _trs] (:messages req))
-                     {:model "sonnet" :messages [{:role "user" :content "run it"}]}
-                     (fn [_name _args] "hi\n")
-                     {:api api})]
-        (should (:drives-tool-loop? (api/config api)))
-        (should= 580 (:input-tokens (:token-counts result))))))
+    (sut/set-fake-cli!
+      [{:cycle 1 :kind "tool_use" :payload "{\"name\":\"exec__run\",\"input\":{\"command\":\"echo hi\"}}"}
+       {:cycle 1 :kind "usage" :payload "{\"input_tokens\":200,\"cache_read_input_tokens\":50,\"cache_creation_input_tokens\":10}"}
+       {:cycle 2 :kind "text" :payload "hi came back"}
+       {:cycle 2 :kind "usage" :payload "{\"input_tokens\":260,\"cache_read_input_tokens\":60,\"cache_creation_input_tokens\":0}"}])
+    (sut/make "claude" {:command "claude" :api "claude-cli" :drives-tool-loop? true})
+    (let [api    (sut/make "claude" {:session-key "main" :root "/tmp" :context-window 32768})
+          result (tool-loop/run
+                   (fn [req] (api/chat api req))
+                   (fn [req _resp _tcs _trs] (:messages req))
+                   {:model "sonnet" :messages [{:role "user" :content "run it"}]}
+                   (fn [_name _args] "hi\n")
+                   {:api api})]
+      (should (:drives-tool-loop? (api/config api)))
+      (should= 580 (:input-tokens (:token-counts result)))))
 
   (it "survives augment-provider remake that drops extra-args and command"
     (sut/set-stub!
@@ -593,4 +567,64 @@
         (should (re-find #"(?s).*isaac.*pending.*" (str (:servers status))))
         (should-be-nil fallback)
         (should= 1 (count (sut/invocations)))
-        (should (seq (get-in res [:message :tool_calls])))))))
+        (should (seq (get-in res [:message :tool_calls]))))))
+
+  (it "maps mcp__isaac__ tool names to isaac names and does not re-dispatch tool-fn"
+    (let [tool-runs (atom [])
+          out       (ndjson [{:type    "assistant"
+                              :message {:content [{:type  "tool_use"
+                                                   :id    "call_1"
+                                                   :name  "mcp__isaac__exec__run"
+                                                   :input {:command "echo hi"}}]}}
+                             {:type    "assistant"
+                              :message {:content [{:type "text" :text "hi came back"}]}}
+                             (result-line "hi came back" (usage 260 60 0))])]
+      (sut/set-stub! (constantly {:exit 0 :out out :err ""}))
+      (let [api    (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+            result (tool-loop/run
+                     (fn [req] (api/chat api req))
+                     (fn [req _resp _tcs _trs] (:messages req))
+                     {:model "sonnet" :messages [{:role "user" :content "run it"}]}
+                     (fn [name args]
+                       (swap! tool-runs conj [name args])
+                       "hi\n")
+                     {:api api})]
+        (should= [] @tool-runs)
+        (should= 1 (count (sut/invocations)))
+        (should= "hi came back" (get-in result [:response :message :content]))
+        (should= "exec__run" (:name (first (:tool-calls result)))))))
+
+  (it "assembles the reply from text_delta chunks once when the trailing message repeats them"
+    (let [out (ndjson [{:type  "stream_event"
+                        :event {:type  "content_block_delta"
+                                :delta {:type "text_delta" :text "mcp-loop"}}}
+                       {:type  "stream_event"
+                        :event {:type  "content_block_delta"
+                                :delta {:type "text_delta" :text "-ok"}}}
+                       {:type    "assistant"
+                        :message {:content [{:type "text" :text "mcp-loop-ok"}]}}
+                       (result-line "mcp-loop-ok" (usage 2 0 0))])]
+      (sut/set-stub! (constantly {:exit 0 :out out :err ""}))
+      (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+            res (api/chat api {:model "sonnet" :messages [{:role "user" :content "ping"}]})]
+        (should= "mcp-loop-ok" (get-in res [:message :content])))))
+
+  (it "fake CLI emits every scripted cycle in one process with a single result event"
+    (sut/set-fake-cli! [{:cycle 1 :kind "tool_use" :payload "{\"name\":\"mcp__isaac__exec__run\",\"input\":{\"command\":\"echo one\"}}"}
+                        {:cycle 2 :kind "tool_use" :payload "{\"name\":\"mcp__isaac__exec__run\",\"input\":{\"command\":\"echo two\"}}"}
+                        {:cycle 3 :kind "text" :payload "both done"}])
+    (let [envelope (json/generate-string {:type "user" :message {:role "user" :content "twice"}})
+          result   (#'sut/simulate-fake-cli!
+                     ["claude" "--print" "--output-format" "stream-json" "--verbose" "--mcp-config" "/tmp/x.json"]
+                     envelope)
+          events   (map #(json/parse-string % true) (str/split-lines (:out result)))
+          tools    (filter (fn [evt]
+                             (some #(= "tool_use" (:type %))
+                                   (or (get-in evt [:message :content]) [])))
+                           events)
+          results  (filter #(= "result" (:type %)) events)]
+      (should= 0 (:exit result))
+      (should= 2 (count tools))
+      (should= "mcp__isaac__exec__run" (get-in (first tools) [:message :content 0 :name]))
+      (should= 1 (count results))
+      (should= "both done" (:result (last results))))))
