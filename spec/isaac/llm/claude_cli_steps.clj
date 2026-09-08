@@ -8,7 +8,8 @@
     [isaac.tool.tools-steps :as tools-steps]
     [isaac.llm.api.claude-cli :as claude-cli]
     [isaac.nexus :as nexus]
-    [isaac.session.session-steps :as session-steps]))
+    [isaac.session.session-steps :as session-steps]
+    [isaac.step-tables :as match]))
 
 (helper! isaac.llm.claude-cli-steps)
 
@@ -112,8 +113,13 @@
           (if (str/blank? value)
             (when-not (contains? arg-map arg)
               (swap! failures conj (str "missing flag " arg)))
-            (when-not (= value (get arg-map arg))
-              (swap! failures conj (str "expected " arg " = " value " got " (get arg-map arg)))))
+            (let [actual (get arg-map arg)]
+              (if (str/starts-with? (str value) "#\"")
+                (let [pattern (re-pattern (str "(?s)" (second (re-matches #"#\"(.+)\"" value))))]
+                  (when-not (and actual (re-find pattern (str actual)))
+                    (swap! failures conj (str "expected " arg " matching " value " got " actual))))
+                (when-not (= value actual)
+                  (swap! failures conj (str "expected " arg " = " value " got " actual))))))
 
           :else
           (swap! failures conj (str "unknown table arg " arg)))))
@@ -405,13 +411,38 @@
 
 (defn fake-claude-code-received-on-stdin [table]
   (session-steps/await-turn!)
-  (let [actual   (claude-cli/fake-cli-stdin)
-        expected (mapv (fn [row]
-                         (let [m (zipmap (:headers table) row)]
-                           {:role    (str (get m "role"))
-                            :content (str (get m "content"))}))
-                       (:rows table))]
-    (g/should= expected actual)))
+  (let [actual  (claude-cli/fake-cli-stdin)
+        headers (:headers table)]
+    (if (some #{"type" "message.role" "message.content"} headers)
+      (let [result (match/match-entries table actual)]
+        (g/should= [] (:failures result)))
+      (let [expected (mapv (fn [row]
+                             (let [m (zipmap headers row)]
+                               {:role    (str (get m "role"))
+                                :content (str (get m "content"))}))
+                           (:rows table))]
+        (g/should= expected actual)))))
+
+(defn fake-claude-code-received-no-bare-stdin-lines []
+  (session-steps/await-turn!)
+  (let [actual (claude-cli/fake-cli-stdin)]
+    (g/should (seq actual))
+    (doseq [line actual]
+      (g/should (= "user" (str (:type line))))
+      (g/should (map? (:message line))))))
+
+(defn mcp-config-names-server-running [name table]
+  (session-steps/await-turn!)
+  (let [saved  (claude-cli/last-mcp-config)
+        server (get-in saved [:body :mcpServers (keyword name)])
+        argv   (str/join " " (concat [(:command server)] (:args server)))
+        regexes (map first (:rows table))]
+    (g/should-not-be-nil server)
+    (doseq [cell regexes]
+      (let [pattern (if (str/starts-with? (str cell) "#\"")
+                      (re-pattern (str "(?s)" (second (re-matches #"#\"(.+)\"" cell))))
+                      (re-pattern (str cell)))]
+        (g/should (re-find pattern argv))))))
 
 (defn fake-claude-code-was-terminated []
   (session-steps/await-turn!)
@@ -442,6 +473,9 @@
 (defgiven "the fake Claude Code exits {code:int} before streaming with stderr {text:string}"
   isaac.llm.claude-cli-steps/fake-claude-code-exits-before-streaming)
 (defthen "the fake Claude Code received on stdin:" isaac.llm.claude-cli-steps/fake-claude-code-received-on-stdin)
+(defthen "the fake Claude Code received no bare stdin lines" isaac.llm.claude-cli-steps/fake-claude-code-received-no-bare-stdin-lines)
+(defthen "the MCP config handed to the fake Claude Code names server {name:string} running:"
+  isaac.llm.claude-cli-steps/mcp-config-names-server-running)
 (defthen "the fake Claude Code was terminated" isaac.llm.claude-cli-steps/fake-claude-code-was-terminated)
 (defthen "the fake Claude Code was invoked with:" isaac.llm.claude-cli-steps/fake-claude-code-invoked-with)
 (defthen "the turn result is:" isaac.llm.claude-cli-steps/turn-result-table)

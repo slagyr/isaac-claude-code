@@ -94,10 +94,9 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | message   | assistant    | here is my answer    |                      |
     When the user sends "and again" on session "main"
     Then the fake Claude Code received on stdin:
-      | role      | content                     |
-      | user      | think then answer           |
-      | assistant | here is my answer           |
-      | user      | and again                   |
+      | type | message.role | message.content                   |
+      | user | user         | #"(?s).*think then answer.*here is my answer.*" |
+      | user | user         | and again                         |
 
   Scenario: cancel mid-loop terminates the process and the turn ends cancelled
     Given a fake Claude Code on the path scripted with:
@@ -127,10 +126,9 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | 1     | text | second  |
     When the user sends "two" on session "main"
     Then the fake Claude Code received on stdin:
-      | role      | content |
-      | user      | one     |
-      | assistant | first   |
-      | user      | two     |
+      | type | message.role | message.content       |
+      | user | user         | #"(?s).*one.*first.*" |
+      | user | user         | two                   |
     And the fake Claude Code was invoked with:
       | arg                       | value       |
       | --input-format            | stream-json |
@@ -209,7 +207,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | --print          |       |
       | --output-format  | json  |
 
-  @wip
   Scenario: stdin carries stream-json user envelopes, never bare role/content lines (isaac-6z4r)
     The real CLI (2.1.236) ignores a bare {"role":…,"content":…} line, reads
     EOF and exits 0 with no output. Every stdin line must be
@@ -230,7 +227,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | user | user         | two                               |
     And the fake Claude Code received no bare stdin lines
 
-  @wip
   Scenario: a driven turn writes an MCP config that points Claude Code at isaac's mcp-bridge for this turn (isaac-6z4r)
     --strict-mcp-config without --mcp-config gives Claude Code no tools at all.
     The driver must register the turn and hand the CLI a config whose isaac

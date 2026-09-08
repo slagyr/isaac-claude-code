@@ -328,7 +328,8 @@
     (sut/set-fake-cli! [{:cycle 1 :kind "text_delta" :payload "po"}
                         {:cycle 1 :kind "text_delta" :payload "ng"}
                         {:cycle 1 :kind "usage" :payload "{\"input_tokens\":2,\"cache_read_input_tokens\":3289,\"cache_creation_input_tokens\":5473}"}])
-    (let [result (#'sut/simulate-fake-cli! ["claude" "--print" "--output-format" "stream-json" "--verbose"] "hi")
+    (let [envelope (json/generate-string {:type "user" :message {:role "user" :content "hi"}})
+          result (#'sut/simulate-fake-cli! ["claude" "--print" "--output-format" "stream-json" "--verbose"] envelope)
           events (map #(json/parse-string % true) (str/split-lines (:out result)))]
       (should= 0 (:exit result))
       (should (some #(= "stream_event" (:type %)) events))
@@ -339,7 +340,8 @@
 
   (it "fake CLI emits an is_error result for kind error_result"
     (sut/set-fake-cli! [{:cycle 1 :kind "error_result" :payload "MCP server \"isaac\" failed to connect"}])
-    (let [result (#'sut/simulate-fake-cli! ["claude" "--print" "--output-format" "stream-json" "--verbose"] "hi")
+    (let [envelope (json/generate-string {:type "user" :message {:role "user" :content "hi"}})
+          result (#'sut/simulate-fake-cli! ["claude" "--print" "--output-format" "stream-json" "--verbose"] envelope)
           events (map #(json/parse-string % true) (str/split-lines (:out result)))
           result-evt (last (filter #(= "result" (:type %)) events))]
       (should= true (:is_error result-evt))
@@ -377,4 +379,62 @@
             fallback (first (filter #(= :claude/driver-fallback (:event %)) @log/captured-logs))]
         (should-not-be-nil fallback)
         (should= :cli-error (:reason fallback))
-        (should (re-find #"(?s).*failed to connect.*" (str (:stderr fallback))))))))
+        (should (re-find #"(?s).*failed to connect.*" (str (:stderr fallback)))))))
+
+  (it "emits stream-json user envelopes on stdin, never bare role/content lines"
+    (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "second"}])
+    (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})]
+      (api/chat api {:model    "sonnet"
+                     :messages [{:role "user" :content "one"}
+                                {:role "assistant" :content "first"}
+                                {:role "user" :content "two"}]})
+      (let [in     (:in (first (sut/invocations)))
+            lines  (str/split-lines in)
+            parsed (map #(json/parse-string % true) lines)]
+        (should= 2 (count parsed))
+        (doseq [evt parsed]
+          (should= "user" (:type evt))
+          (should= "user" (get-in evt [:message :role]))
+          (should (string? (get-in evt [:message :content]))))
+        (should (re-find #"(?s).*one.*first.*" (get-in (first parsed) [:message :content])))
+        (should= "two" (get-in (last parsed) [:message :content]))
+        (should-not (some #(and (contains? % :role) (not (contains? % :type))) parsed)))))
+
+  (it "fake CLI emits nothing when stdin has a bare role/content line"
+    (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "ok"}])
+    (let [bare   (json/generate-string {:role "user" :content "hi"})
+          result (#'sut/simulate-fake-cli!
+                   ["claude" "--print" "--output-format" "stream-json" "--verbose"]
+                   bare)]
+      (should= 0 (:exit result))
+      (should= "" (:out result))))
+
+  (it "fake CLI refuses tool_use rows when driven without --mcp-config"
+    (sut/set-fake-cli! [{:cycle 1 :kind "tool_use" :payload "{\"name\":\"exec__run\",\"input\":{\"command\":\"echo hi\"}}"}
+                        {:cycle 1 :kind "text" :payload "should not emit"}])
+    (let [envelope (json/generate-string {:type "user" :message {:role "user" :content "run it"}})
+          result   (#'sut/simulate-fake-cli!
+                     ["claude" "--print" "--output-format" "stream-json" "--verbose" "--input-format" "stream-json"]
+                     envelope)
+          events   (if (str/blank? (:out result))
+                     []
+                     (map #(json/parse-string % true) (str/split-lines (:out result))))]
+      (should-not (some (fn [evt]
+                          (some #(= "tool_use" (:type %))
+                                (or (get-in evt [:message :content]) [])))
+                        events))))
+
+  (it "passes --mcp-config pointing at a temp json that runs isaac mcp-bridge for a turn"
+    (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "ok"}])
+    (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})]
+      (api/chat api {:model "sonnet" :messages [{:role "user" :content "hi"}]})
+      (let [argv    (:argv (first (sut/invocations)))
+            idx     (.indexOf argv "--mcp-config")
+            path    (when (<= 0 idx) (nth argv (inc idx)))
+            saved   (sut/last-mcp-config)
+            server  (get-in saved [:body :mcpServers :isaac])
+            argv*   (str/join " " (concat [(:command server)] (:args server)))]
+        (should (<= 0 idx))
+        (should (re-find #"\.json$" (str path)))
+        (should= "isaac" (:command server))
+        (should (re-find #"(?s).*mcp-bridge.*--turn.*[0-9a-f-]+.*" argv*))))))

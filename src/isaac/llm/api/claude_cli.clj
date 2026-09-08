@@ -8,7 +8,8 @@
     [isaac.llm.followup :as followup]
     [isaac.llm.prompt.builder :as prompt]
     [isaac.llm.tool-loop :as tool-loop]
-    [isaac.logger :as log]))
+    [isaac.logger :as log]
+    [isaac.mcp.turns :as mcp-turns]))
 
 ;; region ----- Test Hooks -----
 
@@ -40,6 +41,7 @@
 (defonce ^:private fallback-logged?* (atom false))
 (defonce ^:private last-driven?* (atom false))
 (defonce ^:private last-cfg* (atom {}))
+(defonce ^:private last-mcp-config* (atom nil))
 
 (def ^:private remembered-keys
   [:drives-tool-loop? :command :extra-args :extraArgs
@@ -78,7 +80,8 @@
   (reset! stdin-messages* [])
   (reset! fallback-logged?* false)
   (reset! last-driven?* false)
-  (reset! last-cfg* {}))
+  (reset! last-cfg* {})
+  (reset! last-mcp-config* nil))
 
 (defn fail-mcp-init! []
   (reset! fail-mcp-init?* true)
@@ -93,6 +96,12 @@
 (defn fake-cli-terminated? []
   @terminated?*)
 
+(defn- content-as-text [content]
+  (cond
+    (string? content) content
+    (vector? content) (->> content (filter #(= "text" (:type %))) (map :text) (str/join))
+    :else (str content)))
+
 (defn- parse-stdin-line [line]
   (let [t (str/trim (or line ""))]
     (when (seq t)
@@ -100,13 +109,13 @@
             (let [parsed  (json/parse-string t true)
                   msg     (or (:message parsed) parsed)
                   role    (or (:role msg) (:role parsed))
-                  content (or (:content msg) (:content parsed))]
+                  content (or (:content msg) (:content parsed))
+                  text    (content-as-text content)]
               (when role
-                {:role    (name role)
-                 :content (cond
-                            (string? content) content
-                            (vector? content) (->> content (filter #(= "text" (:type %))) (map :text) (str/join))
-                            :else (str content))}))
+                (cond-> {:role (name role) :content text}
+                  (:type parsed) (assoc :type (name (:type parsed)))
+                  (:message parsed) (assoc :message {:role    (name (or (:role (:message parsed)) role))
+                                                     :content text}))))
             (catch Exception _ nil))
           (when-let [[_ role content] (re-matches #"(?i)(user|assistant|system):\s*(.*)" t)]
             {:role    (str/lower-case role)
@@ -122,7 +131,11 @@
   (reset! fake-cli* script)
   (reset! fake-cycle* 0)
   (reset! stdin-messages* [])
-  (reset! terminated?* false))
+  (reset! terminated?* false)
+  (reset! last-mcp-config* nil))
+
+(defn last-mcp-config []
+  @last-mcp-config*)
 
 ;; endregion ^^^^^ Test Hooks ^^^^^
 
@@ -172,11 +185,29 @@
     (str/join "\n\n" (remove str/blank? role-lines))))
 
 (defn- conversation->stream-json [request]
-  (->> (conversation-messages request)
-       (map (fn [{:keys [role content]}]
-              (json/generate-string {:role    (name role)
-                                     :content (content->text content)})))
-       (str/join "\n")))
+  ;; stream-json input accepts only user envelopes. Prior turns become prose
+  ;; inside a user message (assistant history as "Assistant: …"); the live
+  ;; prompt is the last envelope. (isaac-6z4r)
+  (let [msgs (vec (conversation-messages request))]
+    (if (empty? msgs)
+      ""
+      (let [history (butlast msgs)
+            live    (last msgs)
+            hist-text (->> history
+                           (map (fn [{:keys [role content]}]
+                                  (str (str/capitalize (name role)) ": " (content->text content))))
+                           (str/join "\n\n"))
+            envelopes (cond-> []
+                        (seq hist-text)
+                        (conj {:type "user" :message {:role "user" :content hist-text}})
+
+                        :always
+                        (conj {:type    "user"
+                               :message {:role    "user"
+                                         :content (content->text (:content live))}}))]
+        (->> envelopes
+             (map json/generate-string)
+             (str/join "\n"))))))
 
 (defn- tool-call-text [name args]
   (str tool-call-open (json/generate-string {:name name :arguments args}) tool-call-close))
@@ -296,20 +327,21 @@
               :found false
               :note "no CLI switch; --no-session-persistence still emits ai-title")))
 
-(defn- flag-args [streaming? driven?]
+(defn- flag-args [streaming? driven? mcp-config-path]
   ;; `--tools ""` disables ALL built-in tools (the real CLI flag; the prior
   ;; `--disallowed-tools all` denied a tool literally named "all" — i.e. nothing,
   ;; and warned). With no tools there is no tool loop, so the --print run is a
   ;; pure completion; `--max-turns` does not exist in this CLI version. Isaac
   ;; owns the transcript, so session persistence stays off. (isaac-kn7y)
-  ;; Driven turns (isaac-5xn7) add stream-json input + MCP config so Claude Code
-  ;; owns the tool loop against isaac's mcp-bridge.
+  ;; Driven turns (isaac-5xn7 / isaac-6z4r) add stream-json input + MCP config
+  ;; so Claude Code owns the tool loop against isaac's mcp-bridge.
   (cond-> ["--print"
            "--output-format" (if (or streaming? driven?) "stream-json" "json")]
     (or streaming? driven?) (conj "--include-partial-messages" "--verbose")
     driven? (into ["--input-format" "stream-json"
                    "--strict-mcp-config"
                    "--permission-mode" "bypassPermissions"])
+    (and driven? mcp-config-path) (into ["--mcp-config" mcp-config-path])
     :always (into ["--tools" ""
                    "--no-session-persistence"])))
 
@@ -322,12 +354,52 @@
 (defn- subprocess-env []
   (dissoc (into {} (System/getenv)) "ANTHROPIC_API_KEY"))
 
-(defn- build-argv [cfg request streaming?]
+(defn- mcp-server-url [cfg]
+  (or (:mcp-server-url cfg)
+      (:server-url cfg)
+      (System/getenv "ISAAC_SERVER_URL")
+      "http://127.0.0.1:7733"))
+
+(defn- mcp-server-token [cfg]
+  (or (:mcp-token cfg)
+      (System/getenv "ISAAC_SERVER_TOKEN")))
+
+(defn- write-mcp-config! [turn-id cfg]
+  (let [file (java.io.File/createTempFile "isaac-mcp-" ".json")
+        args (cond-> ["mcp-bridge" "--turn" turn-id "--server" (mcp-server-url cfg)]
+               (seq (mcp-server-token cfg)) (into ["--token" (mcp-server-token cfg)]))
+        body {:mcpServers {:isaac {:command "isaac"
+                                   :args    args}}}]
+    (spit file (json/generate-string body))
+    (reset! last-mcp-config* {:path (.getAbsolutePath file) :body body})
+    (.getAbsolutePath file)))
+
+(defn- register-mcp-turn! [cfg request]
+  (let [turn-id (str (java.util.UUID/randomUUID))
+        tools   (mapv (fn [t]
+                        (let [fn* (or (:function t) t)]
+                          {:name        (or (:name fn*) (:name t))
+                           :description (or (:description fn*) "")
+                           :parameters  (or (:parameters fn*) {:type "object"})}))
+                      (or (:tools request) []))
+        tool-fn (or (:tool-fn cfg) (fn [_name _args] ""))]
+    (try
+      (mcp-turns/register! turn-id {:session-key (:session-key cfg)
+                                    :tool-fn     tool-fn
+                                    :tools       tools})
+      (catch Exception _))
+    {:turn-id turn-id :path (write-mcp-config! turn-id cfg)}))
+
+(defn- cleanup-mcp-turn! [{:keys [turn-id]}]
+  (when turn-id
+    (try (mcp-turns/clear! turn-id) (catch Exception _))))
+
+(defn- build-argv [cfg request streaming? mcp-config-path]
   (let [driven  (driven? cfg)
         system  (build-system-prompt request)
         base    (into [(command-path cfg)]
                       (concat (extra-args cfg)
-                              (flag-args streaming? driven)
+                              (flag-args streaming? driven mcp-config-path)
                               ["--model" (:model request)]))]
     (if (seq (str/trim system))
       (into base ["--system-prompt" system])
@@ -425,13 +497,29 @@
   (and (= "stream-json" (get arg-map "--output-format"))
        (not (contains? arg-map "--verbose"))))
 
+(defn- envelope-stdin-line? [line]
+  (let [t (str/trim (or line ""))]
+    (when (seq t)
+      (try
+        (let [parsed (json/parse-string t true)]
+          (and (= "user" (str (:type parsed)))
+               (map? (:message parsed))))
+        (catch Exception _ false)))))
+
+(defn- bare-stdin? [in]
+  (let [lines (remove str/blank? (str/split-lines (or in "")))]
+    (and (seq lines) (not (every? envelope-stdin-line? lines)))))
+
 (defn- simulate-fake-cli! [argv in]
   (let [script    (or @fake-cli* [])
         n         (swap! fake-cycle* inc)
         rows      (cycle-rows script n)
         arg-map   (argv->arg-map argv)
         json-out? (= "json" (get arg-map "--output-format"))
-        text      (or (some #(when (= "text" (:kind %)) (:payload %)) rows) "")]
+        text      (or (some #(when (= "text" (:kind %)) (:payload %)) rows) "")
+        rows*     (if (or json-out? (contains? arg-map "--mcp-config"))
+                    rows
+                    (remove #(= "tool_use" (:kind %)) rows))]
     (capture-stdin! in)
     (cond
       (stream-json-without-verbose? arg-map)
@@ -441,6 +529,9 @@
       (let [{:keys [exit err]} @exit-before-stream*]
         {:exit (or exit 1) :out "" :err (or err "")})
 
+      (and (not json-out?) (bare-stdin? in))
+      {:exit 0 :out "" :err ""}
+
       json-out?
       {:exit 0
        :out  (json/generate-string {:type "result" :result text})
@@ -448,7 +539,7 @@
 
       :else
       {:exit 0
-       :out  (str/join "\n" (map json/generate-string (cycle-events rows)))
+       :out  (str/join "\n" (map json/generate-string (cycle-events rows*)))
        :err  ""})))
 
 (defn- terminate-cli! []
@@ -541,7 +632,7 @@
     (tool-loop/install-provider-driver! claude-loop-driver)))
 
 (defn- fence-retry! [cfg request]
-  (let [argv   (build-argv cfg request false)
+  (let [argv   (build-argv cfg request false nil)
         prompt (request-stdin cfg request)
         env    (subprocess-env)]
     (record-invocation! {:argv argv :env env :in prompt})
@@ -574,7 +665,9 @@
 (defn- invoke! [cfg request streaming?]
   (ensure-driver! cfg)
   (let [streaming? (and streaming? (not @fail-mcp-init?*) (not @exit-before-stream*))
-        argv       (build-argv cfg request streaming?)
+        mcp        (when (driven? cfg)
+                     (register-mcp-turn! cfg request))
+        argv       (build-argv cfg request streaming? (:path mcp))
         prompt     (request-stdin cfg request)
         env        (subprocess-env)]
     (maybe-log-fallback! cfg)
@@ -582,22 +675,25 @@
     (install-cancel-hook! cfg)
     (capture-stdin! prompt)
     (record-invocation! {:argv argv :env env :in prompt})
-    (let [result (run-process! argv env prompt)
-          events (parse-stream-events (:out result))]
-      (when (and (:drives-tool-loop? cfg) (not @fail-mcp-init?*))
-        (log-driver-exit! result events))
-      (cond
-        (and (:drives-tool-loop? cfg)
-             (not @fail-mcp-init?*)
-             (cli-start-failed? result))
-        (fence-fallback! cfg request result :cli-start-failed)
+    (try
+      (let [result (run-process! argv env prompt)
+            events (parse-stream-events (:out result))]
+        (when (and (:drives-tool-loop? cfg) (not @fail-mcp-init?*))
+          (log-driver-exit! result events))
+        (cond
+          (and (:drives-tool-loop? cfg)
+               (not @fail-mcp-init?*)
+               (cli-start-failed? result))
+          (fence-fallback! cfg request result :cli-start-failed)
 
-        (and (:drives-tool-loop? cfg)
-             (not @fail-mcp-init?*)
-             (cli-error? result))
-        (fence-fallback! cfg request result :cli-error)
+          (and (:drives-tool-loop? cfg)
+               (not @fail-mcp-init?*)
+               (cli-error? result))
+          (fence-fallback! cfg request result :cli-error)
 
-        :else result))))
+          :else result))
+      (finally
+        (when mcp (cleanup-mcp-turn! mcp))))))
 
 (defn- stream-json-delta-text [event]
   (let [event (unwrap-stream-event event)
