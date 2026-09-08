@@ -208,3 +208,43 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | arg              | value |
       | --print          |       |
       | --output-format  | json  |
+
+  @wip
+  Scenario: stdin carries stream-json user envelopes, never bare role/content lines (isaac-driver-wiring)
+    The real CLI (2.1.236) ignores a bare {"role":…,"content":…} line, reads
+    EOF and exits 0 with no output. Every stdin line must be
+    {"type":"user","message":{"role":"user","content":…}}; prior turns are
+    replayed as text inside user messages (assistant history is prose, since
+    stream-json input accepts only user messages).
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind | payload |
+      | 1     | text | first   |
+    When the user sends "one" on session "main"
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind | payload |
+      | 1     | text | second  |
+    When the user sends "two" on session "main"
+    Then the fake Claude Code received on stdin:
+      | type | message.role | message.content                   |
+      | user | user         | #"(?s).*one.*first.*"             |
+      | user | user         | two                               |
+    And the fake Claude Code received no bare stdin lines
+
+  @wip
+  Scenario: a driven turn writes an MCP config that points Claude Code at isaac's mcp-bridge for this turn (isaac-driver-wiring)
+    --strict-mcp-config without --mcp-config gives Claude Code no tools at all.
+    The driver must register the turn and hand the CLI a config whose isaac
+    server runs `isaac mcp-bridge` for that turn id.
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind     | payload                                            |
+      | 1     | tool_use | {"name":"exec__run","input":{"command":"echo hi"}} |
+      | 2     | text     | hi came back                                       |
+    When the user sends "run it" on session "main"
+    Then the response is "hi came back"
+    And the fake Claude Code was invoked with:
+      | arg                 | value          |
+      | --strict-mcp-config |                |
+      | --mcp-config        | #".*\.json"    |
+    And the MCP config handed to the fake Claude Code names server "isaac" running:
+      | argv                                   |
+      | #"(?s).*mcp-bridge.*--turn.*[0-9a-f-]+.*" |
