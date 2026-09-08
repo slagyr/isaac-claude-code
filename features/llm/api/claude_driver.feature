@@ -319,3 +319,50 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
     And the log has no entries matching:
       | event                   |
       | :claude/driver-fallback |
+
+  @wip
+  Scenario: an MCP tool call is executed once, under isaac's tool name, and recorded from the bridge's result (isaac-driver-once)
+    Claude Code names MCP tools mcp__<server>__<tool>. The bridge executes the
+    call through the turn registry; the driver must record that pair under
+    isaac's own name (exec__run) and never re-dispatch the call through the
+    drive's tool function. Field run 2026-09-08 20:15Z: seven toolResults for
+    one command, six of them "unknown tool: mcp__isaac__exec__run".
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind     | payload                                                            |
+      | 1     | tool_use | {"name":"mcp__isaac__exec__run","input":{"command":"echo hi"}}     |
+      | 2     | text     | hi came back                                                       |
+    When the user sends "run it" on session "main"
+    Then the response is "hi came back"
+    And session "main" has transcript matching:
+      | type       | message.role | name      | message.content |
+      | toolCall   |              | exec__run |                 |
+      | toolResult |              |           | #"(?s).*hi.*"   |
+      | message    | assistant    |           | hi came back    |
+    And session "main" has 4 transcript entries
+    And the fake Claude Code was invoked exactly once
+
+  @wip
+  Scenario: one CLI process serves the whole turn — tool cycles do not respawn Claude Code (isaac-driver-once)
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind     | payload                                                            |
+      | 1     | tool_use | {"name":"mcp__isaac__exec__run","input":{"command":"echo one"}}    |
+      | 2     | tool_use | {"name":"mcp__isaac__exec__run","input":{"command":"echo two"}}    |
+      | 3     | text     | both done                                                          |
+    When the user sends "twice" on session "main"
+    Then the response is "both done"
+    And the fake Claude Code was invoked exactly once
+    And the log has entries matching:
+      | event               | provider | events                          |
+      | :claude/driver-exit | claude   | #"(?s).*\"result\" 1.*"          |
+
+  @wip
+  Scenario: the reply is assembled from the stream once — deltas and the trailing assistant message are the same text, not concatenated (isaac-driver-once)
+    The real CLI emits the reply as text_delta chunks AND repeats it in the
+    trailing assistant message event; the driver must not append both.
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind        | payload      |
+      | 1     | text_delta  | mcp-loop     |
+      | 1     | text_delta  | -ok          |
+      | 1     | text        | mcp-loop-ok  |
+    When the user sends "Reply with exactly: mcp-loop-ok" on session "main"
+    Then the response is "mcp-loop-ok"
