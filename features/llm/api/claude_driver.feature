@@ -278,3 +278,46 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | arg              | value |
       | --print          |       |
       | --output-format  | json  |
+
+  @wip
+  Scenario: the MCP config carries the running server's own URL and auth token (isaac-driver-bridge-auth)
+    The bridge must reach the server the driver runs inside of: the URL comes
+    from the server's bound port (config :server :port, default 6674) and the
+    token from the server's configured auth token — never from unrelated env
+    names or a hard-coded port.
+    Given the isaac EDN file "config/isaac.edn" exists with:
+      | path              | value          |
+      | server.port       | 7912           |
+      | server.auth.token | harbor-secret  |
+    And a fake Claude Code on the path scripted with:
+      | cycle | kind     | payload                                            |
+      | 1     | tool_use | {"name":"exec__run","input":{"command":"echo hi"}} |
+      | 2     | text     | hi came back                                       |
+    When the user sends "run it" on session "main"
+    Then the response is "hi came back"
+    And the MCP config handed to the fake Claude Code names server "isaac" running:
+      | argv                                                                              |
+      | #"(?s).*mcp-bridge.*--turn.*--server http://127\.0\.0\.1:7912.*--token harbor-secret.*" |
+
+  @wip
+  Scenario: a pending MCP server at init is not a failure — the turn proceeds and the tools arrive (isaac-driver-bridge-auth)
+    Claude Code emits its init event before the stdio server has answered;
+    the isaac server shows "pending" for the first second of every turn.
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind       | payload                                                                     |
+      | 1     | mcp_status | {"mcp_servers":[{"name":"isaac","status":"pending"}],"tools":[]}            |
+      | 1     | tool_use   | {"name":"exec__run","input":{"command":"echo hi"}}                          |
+      | 2     | text       | hi came back                                                                |
+    When the user sends "run it" on session "main"
+    Then the response is "hi came back"
+    And session "main" has transcript matching:
+      | type       | message.role | name      |
+      | toolCall   |              | exec__run |
+      | toolResult |              |           |
+      | message    | assistant    |           |
+    And the log has entries matching:
+      | event              | provider | servers                    |
+      | :claude/mcp-status | claude   | #"(?s).*isaac.*pending.*" |
+    And the log does not have entries matching:
+      | event                   |
+      | :claude/driver-fallback |
