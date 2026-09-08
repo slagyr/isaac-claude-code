@@ -437,4 +437,99 @@
         (should (<= 0 idx))
         (should (re-find #"\.json$" (str path)))
         (should= "isaac" (:command server))
-        (should (re-find #"(?s).*mcp-bridge.*--turn.*[0-9a-f-]+.*" argv*))))))
+        (should (re-find #"(?s).*mcp-bridge.*--turn.*[0-9a-f-]+.*" argv*)))))
+
+  (it "omits the tool protocol contract from --system-prompt on a driven turn"
+    (sut/set-fake-cli! [{:cycle 1 :kind "tool_use" :payload "{\"name\":\"exec__run\",\"input\":{\"command\":\"echo hi\"}}"}
+                        {:cycle 1 :kind "text" :payload "hi came back"}])
+    (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})]
+      (api/chat api {:model    "sonnet"
+                     :messages [{:role "user" :content "run it"}]
+                     :tools    [{:type "function" :function {:name "exec__run"}}]})
+      (let [argv   (:argv (first (sut/invocations)))
+            idx    (.indexOf argv "--system-prompt")
+            system (when (<= 0 idx) (nth argv (inc idx)))]
+        (should-not (str/includes? (str system) sut/tool-protocol-contract))
+        (should-not (re-find #"<tool_call>" (str system)))
+        (should-not (re-find #"tool_call>" (str system))))))
+
+  (it "fake CLI emits a system init event for kind mcp_status"
+    (sut/set-fake-cli! [{:cycle 1 :kind "mcp_status" :payload "{\"mcp_servers\":[{\"name\":\"isaac\",\"status\":\"failed\"}],\"tools\":[]}"}
+                        {:cycle 1 :kind "text" :payload "I have no tools"}])
+    (let [envelope (json/generate-string {:type "user" :message {:role "user" :content "hi"}})
+          result   (#'sut/simulate-fake-cli!
+                     ["claude" "--print" "--output-format" "stream-json" "--verbose" "--mcp-config" "/tmp/x.json"]
+                     envelope)
+          events   (map #(json/parse-string % true) (str/split-lines (:out result)))
+          init     (first (filter #(= "init" (:subtype %)) events))]
+      (should= "system" (:type init))
+      (should= "failed" (:status (first (:mcp_servers init))))
+      (should= [] (:tools init))))
+
+  (it "falls back and logs mcp-status when the init event reports isaac MCP failed"
+    (sut/set-fake-cli! [{:cycle 1 :kind "mcp_status" :payload "{\"mcp_servers\":[{\"name\":\"isaac\",\"status\":\"failed\"}],\"tools\":[]}"}
+                        {:cycle 1 :kind "text" :payload "I have no tools"}])
+    (log/capture-logs
+      (let [api         (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+            _           (api/chat api {:model    "sonnet"
+                                       :messages [{:role "user" :content "run it"}]
+                                       :tools    [{:type "function" :function {:name "exec__run"}}]})
+            status      (first (filter #(= :claude/mcp-status (:event %)) @log/captured-logs))
+            fallback    (first (filter #(= :claude/driver-fallback (:event %)) @log/captured-logs))
+            second-argv (:argv (second (sut/invocations)))]
+        (should-not-be-nil status)
+        (should= "claude" (:provider status))
+        (should= 0 (:tools status))
+        (should (re-find #"(?s).*isaac.*failed.*" (str (:servers status))))
+        (should-not-be-nil fallback)
+        (should= "claude" (:provider fallback))
+        (should= :mcp-failed (:reason fallback))
+        (should= 2 (count (sut/invocations)))
+        (should= "json" (nth second-argv (inc (.indexOf second-argv "--output-format"))))
+        (should (<= 0 (.indexOf second-argv "--print"))))))
+
+  (it "logs mcp-status and stays on the driven path when isaac is connected with tools"
+    (sut/set-fake-cli! [{:cycle 1 :kind "mcp_status" :payload "{\"mcp_servers\":[{\"name\":\"isaac\",\"status\":\"connected\"}],\"tools\":[\"exec__run\"]}"}
+                        {:cycle 1 :kind "text" :payload "ok"}])
+    (log/capture-logs
+      (let [api      (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+            res      (api/chat api {:model    "sonnet"
+                                    :messages [{:role "user" :content "run it"}]
+                                    :tools    [{:type "function" :function {:name "exec__run"}}]})
+            status   (first (filter #(= :claude/mcp-status (:event %)) @log/captured-logs))
+            fallback (first (filter #(= :claude/driver-fallback (:event %)) @log/captured-logs))]
+        (should= "ok" (get-in res [:message :content]))
+        (should-not-be-nil status)
+        (should= 1 (:tools status))
+        (should (re-find #"(?s).*isaac.*connected.*" (str (:servers status))))
+        (should-be-nil fallback)
+        (should= 1 (count (sut/invocations))))))
+
+  (it "falls back with :mcp-failed when init reports zero tools on a turn that has tools"
+    (sut/set-fake-cli! [{:cycle 1 :kind "mcp_status" :payload "{\"mcp_servers\":[{\"name\":\"isaac\",\"status\":\"connected\"}],\"tools\":[]}"}
+                        {:cycle 1 :kind "text" :payload "toolless"}])
+    (log/capture-logs
+      (let [api      (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+            _        (api/chat api {:model    "sonnet"
+                                    :messages [{:role "user" :content "run it"}]
+                                    :tools    [{:type "function" :function {:name "exec__run"}}]})
+            fallback (first (filter #(= :claude/driver-fallback (:event %)) @log/captured-logs))]
+        (should-not-be-nil fallback)
+        (should= :mcp-failed (:reason fallback))
+        (should= 2 (count (sut/invocations))))))
+
+  (it "falls back with :mcp-failed when a driven reply still contains a tool_call fence"
+    (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "<tool_call>{\"name\":\"exec__run\",\"arguments\":{\"command\":\"echo hi\"}}</tool_call>"}])
+    (log/capture-logs
+      (let [api         (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+            _           (api/chat api {:model    "sonnet"
+                                       :messages [{:role "user" :content "run it"}]
+                                       :tools    [{:type "function" :function {:name "exec__run"}}]})
+            fallback    (first (filter #(= :claude/driver-fallback (:event %)) @log/captured-logs))
+            first-argv  (:argv (first (sut/invocations)))
+            second-argv (:argv (second (sut/invocations)))]
+        (should-not-be-nil fallback)
+        (should= :mcp-failed (:reason fallback))
+        (should= 2 (count (sut/invocations)))
+        (should= "stream-json" (nth first-argv (inc (.indexOf first-argv "--output-format"))))
+        (should= "json" (nth second-argv (inc (.indexOf second-argv "--output-format"))))))))

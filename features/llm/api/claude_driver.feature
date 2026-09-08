@@ -245,7 +245,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | argv                                   |
       | #"(?s).*mcp-bridge.*--turn.*[0-9a-f-]+.*" |
 
-  @wip
   Scenario: a driven turn's system prompt carries no textual tool-call protocol (isaac-lrvb)
     On the driven path the tools are native MCP tools; teaching the fence
     protocol makes Claude Code answer with a <tool_call> fence as text
@@ -265,7 +264,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | toolResult |              |           |
       | message    | assistant    |           |
 
-  @wip
   Scenario: an init event that reports the isaac MCP server failed falls back and logs the server status (isaac-lrvb)
     Given a fake Claude Code on the path scripted with:
       | cycle | kind       | payload                                                          |

@@ -172,11 +172,15 @@
   (when (seq (:tools request))
     (str "## Tools\n" (json/generate-string (:tools request)))))
 
-(defn- build-system-prompt [request]
+(defn- build-system-prompt
+  "Fence path teaches the textual <tool_call> protocol. Driven path must not —
+   tools are native MCP (isaac-lrvb)."
+  [request driven?]
   (str/join "\n\n"
             (remove str/blank?
                     [(system-text request)
-                     (when (seq (:tools request)) tool-protocol-contract)
+                     (when (and (seq (:tools request)) (not driven?))
+                       tool-protocol-contract)
                      (tool-defs-text request)])))
 
 (defn- conversation->prompt-text [request]
@@ -396,7 +400,7 @@
 
 (defn- build-argv [cfg request streaming? mcp-config-path]
   (let [driven  (driven? cfg)
-        system  (build-system-prompt request)
+        system  (build-system-prompt request driven)
         base    (into [(command-path cfg)]
                       (concat (extra-args cfg)
                               (flag-args streaming? driven mcp-config-path)
@@ -431,12 +435,19 @@
       (filterv #(= 1 (:cycle %)) script))))
 
 (defn- parse-payload [kind payload]
-  (if (and (#{"tool_use" "usage"} kind)
+  (if (and (#{"tool_use" "usage" "mcp_status"} kind)
            (string? payload)
            (str/starts-with? (str/trim payload) "{"))
     (try (json/parse-string payload true)
          (catch Exception _ payload))
     payload))
+
+(defn- mcp-init-event [payload]
+  (when payload
+    {:type        "system"
+     :subtype     "init"
+     :mcp_servers (or (:mcp_servers payload) [])
+     :tools       (or (:tools payload) [])}))
 
 (defn- cycle-events [rows]
   (let [text-deltas  (mapv :payload (filter #(= "text_delta" (:kind %)) rows))
@@ -448,17 +459,23 @@
                            rows)
         usage        (some #(when (= "usage" (:kind %))
                               (parse-payload "usage" (:payload %)))
-                           rows)]
+                           rows)
+        mcp-status   (some #(when (= "mcp_status" (:kind %))
+                              (parse-payload "mcp_status" (:payload %)))
+                           rows)
+        init         (mcp-init-event mcp-status)]
     (cond
       error-result
-      [{:type     "result"
-        :is_error true
-        :result   error-result
-        :usage    (or usage {})}]
+      (concat (when init [init])
+              [{:type     "result"
+                :is_error true
+                :result   error-result
+                :usage    (or usage {})}])
 
       (seq text-deltas)
       (let [joined (apply str text-deltas)]
         (concat
+          (when init [init])
           (map (fn [t]
                  {:type  "stream_event"
                   :event {:type  "content_block_delta"
@@ -475,6 +492,7 @@
 
       :else
       (concat
+        (when init [init])
         (map (fn [t]
                {:type  "content_block_delta"
                 :delta {:type "thinking_delta" :thinking t}})
@@ -618,6 +636,41 @@
   (boolean (or (true? (:is_error event))
                (= true (:isError event)))))
 
+(defn- init-event [events]
+  (first (filter #(and (= "system" (str (:type %)))
+                       (= "init" (str (:subtype %))))
+                 events)))
+
+(defn- mcp-tool-count [init]
+  (let [tools (:tools init)]
+    (cond
+      (number? tools) tools
+      (sequential? tools) (count tools)
+      :else 0)))
+
+(defn- isaac-server [init]
+  (let [servers (or (:mcp_servers init) (:mcpServers init) [])]
+    (first (filter #(= "isaac" (str (:name %))) servers))))
+
+(defn- isaac-connected? [init]
+  (= "connected" (str (:status (isaac-server init)))))
+
+(defn- log-mcp-status! [init]
+  (when init
+    (log/info :claude/mcp-status
+              :provider "claude"
+              :servers (or (:mcp_servers init) (:mcpServers init) [])
+              :tools (mcp-tool-count init))))
+
+(defn- mcp-failed? [init request]
+  (and init
+       (seq (:tools request))
+       (or (not (isaac-connected? init))
+           (zero? (mcp-tool-count init)))))
+
+(defn- reply-contains-fence? [result]
+  (str/includes? (str (:out result)) tool-call-open))
+
 (defn- log-driver-exit! [result events]
   (let [result-evt (last (filter result-event? events))]
     (log/info :claude/driver-exit
@@ -677,8 +730,10 @@
     (record-invocation! {:argv argv :env env :in prompt})
     (try
       (let [result (run-process! argv env prompt)
-            events (parse-stream-events (:out result))]
+            events (parse-stream-events (:out result))
+            init   (init-event events)]
         (when (and (:drives-tool-loop? cfg) (not @fail-mcp-init?*))
+          (when init (log-mcp-status! init))
           (log-driver-exit! result events))
         (cond
           (and (:drives-tool-loop? cfg)
@@ -690,6 +745,12 @@
                (not @fail-mcp-init?*)
                (cli-error? result))
           (fence-fallback! cfg request result :cli-error)
+
+          (and (:drives-tool-loop? cfg)
+               (not @fail-mcp-init?*)
+               (or (mcp-failed? init request)
+                   (reply-contains-fence? result)))
+          (fence-fallback! cfg request result :mcp-failed)
 
           :else result))
       (finally
