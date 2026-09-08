@@ -172,3 +172,41 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | arg              | value |
       | --print          |       |
       | --output-format  | json  |
+
+  @wip
+  Scenario: text that arrives only as content_block_delta stream events becomes the reply (isaac-real-cli-shapes)
+    Claude Code 2.1.236 with --include-partial-messages emits the reply as
+    stream_event/content_block_delta/text_delta chunks, then message events,
+    then one result event with stop_reason end_turn and usage. The driver
+    must build the reply from those shapes, not only from a final text block.
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind        | payload                                                                                       |
+      | 1     | text_delta  | po                                                                                            |
+      | 1     | text_delta  | ng                                                                                            |
+      | 1     | usage       | {"input_tokens":2,"cache_read_input_tokens":3289,"cache_creation_input_tokens":5473}           |
+    When the user sends "Reply with exactly: pong" on session "main"
+    Then the response is "pong"
+    And session "main" has transcript matching:
+      | type    | message.role | message.content |
+      | message | assistant    | pong            |
+    And the following sessions match:
+      | name | last-input-tokens |
+      | main | 8764              |
+    And the log has entries matching:
+      | event               | provider | exit-code | result-event |
+      | :claude/driver-exit | claude   | 0         | true         |
+
+  @wip
+  Scenario: a result event with is_error, or an exit with no result event, falls back with the CLI's stderr logged
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind         | payload                               |
+      | 1     | error_result | MCP server "isaac" failed to connect  |
+    When the user sends "fallback please" on session "main"
+    Then the log has entries matching:
+      | event                   | provider | reason    | stderr                        |
+      | :claude/driver-exit     | claude   |           |                               |
+      | :claude/driver-fallback | claude   | cli-error | #"(?s).*failed to connect.*" |
+    And the fake Claude Code was invoked with:
+      | arg              | value |
+      | --print          |       |
+      | --output-format  | json  |
