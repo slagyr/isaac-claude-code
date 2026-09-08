@@ -255,7 +255,7 @@
   (session-steps/await-turn!)
   (let [output (g/get :output)
         result (g/get :llm-result)]
-    (g/should= expected (or output
+    (g/should= expected (or (not-empty output)
                             (:content result)
                             (get-in result [:message :content])
                             (get-in result [:response :message :content])))))

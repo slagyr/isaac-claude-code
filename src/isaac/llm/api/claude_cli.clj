@@ -44,6 +44,7 @@
 (defonce ^:private last-cfg* (atom {}))
 (defonce ^:private last-mcp-config* (atom nil))
 (defonce ^:private drive-tool-fn* (atom nil))
+(defonce ^:private on-driven-tool-cycle* (atom nil))
 
 (def ^:private remembered-keys
   [:drives-tool-loop? :command :extra-args :extraArgs
@@ -84,7 +85,8 @@
   (reset! last-driven?* false)
   (reset! last-cfg* {})
   (reset! last-mcp-config* nil)
-  (reset! drive-tool-fn* nil))
+  (reset! drive-tool-fn* nil)
+  (reset! on-driven-tool-cycle* nil))
 
 (defn fail-mcp-init! []
   (reset! fail-mcp-init?* true)
@@ -506,25 +508,28 @@
                         :usage       (or usage {})}})
 
       :else
-      {:init         init
-       :body         (concat
-                       (map (fn [t]
-                              {:type  "content_block_delta"
-                               :delta {:type "thinking_delta" :thinking t}})
-                            thinking)
-                       (map (fn [p]
-                              {:type    "assistant"
-                               :message {:content [{:type  "tool_use"
-                                                    :id    (or (:id p) (str (java.util.UUID/randomUUID)))
-                                                    :name  (:name p)
-                                                    :input (or (:input p) (:arguments p) {})}]}})
-                            tools)
-                       (when text
-                         [{:type    "assistant"
-                           :message {:content [{:type "text" :text text}]}}]))
-       :result-event {:type   "result"
-                      :result (or text "")
-                      :usage  (or usage {})}})))
+      (let [tool-blocks (mapv (fn [p]
+                                {:type  "tool_use"
+                                 :id    (or (:id p) (str (java.util.UUID/randomUUID)))
+                                 :name  (:name p)
+                                 :input (or (:input p) (:arguments p) {})})
+                              tools)
+            text-block  (when text {:type "text" :text text})
+            content     (vec (concat (when (and text-block (seq tool-blocks)) [text-block])
+                                     tool-blocks
+                                     (when (and text-block (empty? tool-blocks)) [text-block])))]
+        {:init         init
+         :body         (concat
+                         (map (fn [t]
+                                {:type  "content_block_delta"
+                                 :delta {:type "thinking_delta" :thinking t}})
+                              thinking)
+                         (when (seq content)
+                           [{:type    "assistant"
+                             :message {:content content}}]))
+         :result-event {:type   "result"
+                        :result (or text "")
+                        :usage  (or usage {})}}))))
 
 (defn- cycle-events [rows]
   (let [{:keys [init body result-event]} (cycle-block-events rows)]
@@ -583,13 +588,25 @@
                                                  (concat (butlast (vec body))
                                                          [(assoc (last (vec body)) :usage usage)])
                                                  body)
-              init*                            (when (and init (= n (first ns*))) [init])]
+              init*                            (when (and init (= n (first ns*))) [init])
+              tcs                              (mapv (fn [b]
+                                                       {:id        (or (:id b) (str (java.util.UUID/randomUUID)))
+                                                        :name      (isaac-tool-name (:name b))
+                                                        :arguments (or (:input b) (:arguments b) {})
+                                                        :raw       b})
+                                                     (mapcat event-tool-uses body*))
+              aside                            (some #(when (= "text" (:kind %)) (:payload %)) rows)
+              hook                             @on-driven-tool-cycle*]
+          (when (and hook (seq tcs))
+            (hook :before aside tcs))
           (doseq [evt body*
                   b   (event-tool-uses evt)]
             (when-let [f @drive-tool-fn*]
               (try
                 (f (isaac-tool-name (:name b)) (or (:input b) (:arguments b) {}))
                 (catch Exception _))))
+          (when (and hook (seq tcs))
+            (hook :after aside tcs))
           (let [tail (when (or last? @terminated?*)
                        [(if last? result-event {:type "result" :result "" :usage (or usage {})})])
                 acc* (concat acc init* body* tail)]
@@ -923,34 +940,49 @@
   (let [events       (parse-stream-events out)
         tool-calls   (atom [])
         texts        (atom [])
+        asides       (atom [])
+        cycle-text   (atom [])
         reasoning    (atom [])
         usage        (atom (zero-usage))
         cycle-usages (atom [])
-        saw-delta?   (atom false)]
+        saw-delta?   (atom false)
+        flush-cycle! (fn [has-tools?]
+                       (let [joined (str/join @cycle-text)]
+                         (reset! cycle-text [])
+                         (reset! saw-delta? false)
+                         (when (seq joined)
+                           (if has-tools?
+                             (swap! asides conj joined)
+                             (swap! texts conj joined)))))]
     (doseq [event events]
       (when-let [t (stream-json-delta-thinking event)]
         (swap! reasoning conj t))
       (when-let [t (stream-json-delta-text event)]
         (reset! saw-delta? true)
-        (swap! texts conj t))
+        (swap! cycle-text conj t))
       (when-let [content (get-in (unwrap-stream-event event) [:message :content])]
         (when (vector? content)
-          (doseq [b content]
-            (case (:type b)
-              "tool_use" (swap! tool-calls conj (->tool-call b))
-              "text" (when (and (not @saw-delta?) (:text b))
-                       (swap! texts conj (:text b)))
-              nil))))
+          (let [blocks     content
+                has-tools? (boolean (some #(= "tool_use" (:type %)) blocks))]
+            (doseq [b blocks]
+              (case (:type b)
+                "tool_use" (swap! tool-calls conj (->tool-call b))
+                "text" (when (and (not @saw-delta?) (:text b))
+                         (swap! cycle-text conj (:text b)))
+                nil))
+            (flush-cycle! has-tools?))))
       (when-let [tcs (content-tool-calls (get-in event [:content]))]
         (swap! tool-calls into tcs))
       (when-let [u (event-usage event)]
         (swap! cycle-usages conj u)
         (reset! usage u))
       (when (result-event? event)
+        (flush-cycle! false)
         (when (and (empty? @texts)
                    (not (result-error? event))
                    (seq (str (:result event))))
           (swap! texts conj (str (:result event))))))
+    (flush-cycle! false)
     (let [text  (str/join @texts)
           tcs   @tool-calls
           think (str/join @reasoning)]
@@ -960,7 +992,8 @@
                :tool-calls   tcs
                :usage        @usage
                :cycle-usages @cycle-usages}
-        (seq think) (assoc :reasoning {:summary think})))))
+        (seq think) (assoc :reasoning {:summary think})
+        (seq @asides) (assoc :asides @asides)))))
 
 ;; endregion ^^^^^ CLI Invocation ^^^^^
 
@@ -983,14 +1016,17 @@
 (defn- fire-on-cycle! [on-cycle phase n payload]
   (when on-cycle (on-cycle phase n payload)))
 
-(defn- cycle-response [response tool-calls]
+(defn- cycle-response [response tool-calls content]
   (if (seq tool-calls)
     (-> response
+        (dissoc :asides)
         (assoc :tool-calls tool-calls)
         (assoc-in [:message :tool_calls] tool-calls)
-        (assoc-in [:message :content] (or (get-in response [:message :content]) "")))
+        (assoc-in [:message :content] (or content "")))
     (-> response
+        (dissoc :asides)
         (assoc :tool-calls [])
+        (assoc-in [:message :content] (or content (get-in response [:message :content]) ""))
         (update :message #(dissoc (or % {}) :tool_calls)))))
 
 (defn claude-loop-driver
@@ -1013,12 +1049,25 @@
          :tool-calls   []
          :token-counts (empty-token-counts)
          :cancelled?   true})
-      (let [tool-calls* (atom [])
-            cycle-n*    (atom 0)
-            fire-start! (fn []
-                          (let [n (swap! cycle-n* inc)]
-                            (fire-on-cycle! on-cycle :start n request)
-                            n))]
+      (let [tool-calls*        (atom [])
+            cycle-n*           (atom 0)
+            live-tool-cycles?* (atom false)
+            fire-start!        (fn []
+                                 (let [n (swap! cycle-n* inc)]
+                                   (fire-on-cycle! on-cycle :start n request)
+                                   n))]
+        (reset! on-driven-tool-cycle*
+                (fn [phase aside tcs]
+                  (case phase
+                    :before (when (seq tcs)
+                              (reset! live-tool-cycles?* true)
+                              (fire-on-cycle! on-cycle :end @cycle-n*
+                                              (cycle-response {:message {:role "assistant" :content (or aside "")}}
+                                                              tcs
+                                                              aside)))
+                    :after (when-not (cancelled?)
+                             (fire-start!))
+                    nil)))
         (fire-start!)
         (let [response (chat-fn request)]
           (if (or (:error response) (:unavailable? response))
@@ -1037,10 +1086,6 @@
                                (usage->token-counts usage))
                   cancelled  (boolean (cancelled?))]
               (reset! tool-calls* tool-calls)
-              (doseq [tc tool-calls]
-                (fire-on-cycle! on-cycle :end @cycle-n* (cycle-response response [tc]))
-                (when-not cancelled
-                  (fire-start!)))
               (if cancelled
                 (do
                   (terminate-cli!)
@@ -1048,13 +1093,20 @@
                    :tool-calls   tool-calls
                    :token-counts tokens
                    :cancelled?   true})
-                (do
-                  (fire-on-cycle! on-cycle :end @cycle-n* (cycle-response response []))
-                  {:response     (cycle-response response [])
-                   :tool-calls   tool-calls
-                   :token-counts tokens})))))))
+                (let [asides (vec (or (:asides response) []))]
+                  (when-not @live-tool-cycles?*
+                    (doseq [[i tc] (map-indexed vector tool-calls)]
+                      (fire-on-cycle! on-cycle :end @cycle-n*
+                                      (cycle-response response [tc] (get asides i)))
+                      (fire-start!)))
+                  (let [final (cycle-response response [] nil)]
+                    (fire-on-cycle! on-cycle :end @cycle-n* final)
+                    {:response     final
+                     :tool-calls   tool-calls
+                     :token-counts tokens}))))))))
     (finally
-      (reset! drive-tool-fn* nil))))
+      (reset! drive-tool-fn* nil)
+      (reset! on-driven-tool-cycle* nil))))
 
 ;; endregion ^^^^^ LoopDriver ^^^^^
 

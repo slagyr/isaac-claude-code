@@ -627,4 +627,58 @@
       (should= 2 (count tools))
       (should= "mcp__isaac__exec__run" (get-in (first tools) [:message :content 0 :name]))
       (should= 1 (count results))
-      (should= "both done" (:result (last results))))))
+      (should= "both done" (:result (last results)))))
+
+  (it "keeps pre-tool text off the reply so the drive can treat it as an aside"
+    (let [out (ndjson [{:type    "assistant"
+                        :message {:content [{:type "text" :text "OK"}
+                                            {:type  "tool_use"
+                                             :id    "call_1"
+                                             :name  "mcp__isaac__exec__run"
+                                             :input {:command "echo hi"}}]}}
+                       {:type    "assistant"
+                        :message {:content [{:type "text" :text "hi came back"}]}}
+                       (result-line "hi came back" (usage 260 60 0))])]
+      (sut/set-stub! (constantly {:exit 0 :out out :err ""}))
+      (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+            res (api/chat api {:model "sonnet" :messages [{:role "user" :content "run it"}]})]
+        (should= "hi came back" (get-in res [:message :content]))
+        (should= "exec__run" (:name (first (:tool-calls res))))))
+
+  (it "fake CLI keeps cycle-1 chatter as :asides and cycle-2 text as the reply"
+    (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "OK"}
+                        {:cycle 1 :kind "tool_use" :payload "{\"name\":\"mcp__isaac__exec__run\",\"input\":{\"command\":\"echo hi\"}}"}
+                        {:cycle 2 :kind "text" :payload "hi came back"}])
+    (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+          res (api/chat api {:model "sonnet" :messages [{:role "user" :content "run it"}]})]
+      (should= "hi came back" (get-in res [:message :content]))
+      (should= ["OK"] (:asides res))
+      (should= "exec__run" (:name (first (:tool-calls res))))))
+
+  (it "fires the tool-cycle end with aside text before tool-fn, then the reply"
+    (let [cycles (atom [])]
+      (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "OK"}
+                          {:cycle 1 :kind "tool_use" :payload "{\"name\":\"mcp__isaac__exec__run\",\"input\":{\"command\":\"echo hi\"}}"}
+                          {:cycle 2 :kind "text" :payload "hi came back"}])
+      (let [api    (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+            result (tool-loop/run
+                     (fn [req] (api/chat api req))
+                     (fn [req _resp _tcs _trs] (:messages req))
+                     {:model "sonnet" :messages [{:role "user" :content "run it"}]}
+                     (fn [_name _args]
+                       (swap! cycles conj {:phase :tool})
+                       "hi\n")
+                     {:api      api
+                      :on-cycle (fn [phase n payload]
+                                  (swap! cycles conj {:phase   phase
+                                                      :n       n
+                                                      :content (get-in payload [:message :content])
+                                                      :tools   (mapv :name (or (:tool-calls payload) []))}))})]
+        (should= "hi came back" (get-in result [:response :message :content]))
+        (should= [{:phase :start :n 1 :content nil :tools []}
+                  {:phase :end :n 1 :content "OK" :tools ["exec__run"]}
+                  {:phase :tool}
+                  {:phase :start :n 2 :content nil :tools []}
+                  {:phase :end :n 2 :content "hi came back" :tools []}]
+                 @cycles)))))
+  )

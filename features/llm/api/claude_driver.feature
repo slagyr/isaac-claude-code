@@ -364,7 +364,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
     When the user sends "Reply with exactly: mcp-loop-ok" on session "main"
     Then the response is "mcp-loop-ok"
 
-  @wip
   Scenario: text before a tool call is an aside, not part of the reply (isaac-8slm)
     Field run 2026-09-08 22:09Z (module 0.1.7): the model said "OK", called
     the tool, then answered "mcp-loop-ok"; the reply arrived as "OKmcp-loop-ok".
