@@ -174,7 +174,7 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | --output-format  | json  |
 
   @wip
-  Scenario: text that arrives only as content_block_delta stream events becomes the reply (isaac-real-cli-shapes)
+  Scenario: text that arrives only as content_block_delta stream events becomes the reply (isaac-0lyh)
     Claude Code 2.1.236 with --include-partial-messages emits the reply as
     stream_event/content_block_delta/text_delta chunks, then message events,
     then one result event with stop_reason end_turn and usage. The driver
