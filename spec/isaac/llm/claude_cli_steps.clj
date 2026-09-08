@@ -400,6 +400,9 @@
 (defn fake-claude-code-fails-mcp-init []
   (claude-cli/fail-mcp-init!))
 
+(defn fake-claude-code-exits-before-streaming [code stderr]
+  (claude-cli/exit-before-streaming! (if (string? code) (parse-long code) code) stderr))
+
 (defn fake-claude-code-received-on-stdin [table]
   (session-steps/await-turn!)
   (let [actual   (claude-cli/fake-cli-stdin)
@@ -436,6 +439,8 @@
 
 (defgiven "a fake Claude Code on the path scripted with:" isaac.llm.claude-cli-steps/fake-claude-code-scripted)
 (defgiven "the fake Claude Code fails MCP initialization" isaac.llm.claude-cli-steps/fake-claude-code-fails-mcp-init)
+(defgiven "the fake Claude Code exits {code:int} before streaming with stderr {text:string}"
+  isaac.llm.claude-cli-steps/fake-claude-code-exits-before-streaming)
 (defthen "the fake Claude Code received on stdin:" isaac.llm.claude-cli-steps/fake-claude-code-received-on-stdin)
 (defthen "the fake Claude Code was terminated" isaac.llm.claude-cli-steps/fake-claude-code-was-terminated)
 (defthen "the fake Claude Code was invoked with:" isaac.llm.claude-cli-steps/fake-claude-code-invoked-with)

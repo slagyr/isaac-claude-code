@@ -33,6 +33,7 @@
 (defonce ^:private fake-cli* (atom nil))
 (defonce ^:private fake-cycle* (atom 0))
 (defonce ^:private fail-mcp-init?* (atom false))
+(defonce ^:private exit-before-stream* (atom nil))
 (defonce ^:private live-process* (atom nil))
 (defonce ^:private terminated?* (atom false))
 (defonce ^:private stdin-messages* (atom []))
@@ -71,6 +72,7 @@
   (reset! fake-cli* nil)
   (reset! fake-cycle* 0)
   (reset! fail-mcp-init?* false)
+  (reset! exit-before-stream* nil)
   (reset! live-process* nil)
   (reset! terminated?* false)
   (reset! stdin-messages* [])
@@ -83,6 +85,10 @@
   (reset! fallback-logged?* false)
   (log/info :claude/driver-fallback :provider "claude" :reason :mcp-init)
   (reset! fallback-logged?* true))
+
+(defn exit-before-streaming! [exit-code stderr]
+  (reset! exit-before-stream* {:exit (or exit-code 1) :err (or stderr "")})
+  (reset! fallback-logged?* false))
 
 (defn fake-cli-terminated? []
   @terminated?*)
@@ -268,14 +274,16 @@
 
 ;; region ----- CLI Invocation -----
 
+(def ^:private STREAM-JSON-NEEDS-VERBOSE
+  "Error: When using --print, --output-format=stream-json requires --verbose")
+
 (defn- driven? [cfg]
   (boolean (and (:drives-tool-loop? cfg) (not @fail-mcp-init?*))))
 
-(defn- maybe-log-fallback! [cfg]
-  (when (and (or (:drives-tool-loop? cfg) @fail-mcp-init?*)
+(defn- maybe-log-fallback! [_cfg]
+  (when (and @fail-mcp-init?*
              (compare-and-set! fallback-logged?* false true))
-    (when @fail-mcp-init?*
-      (log/info :claude/driver-fallback :provider "claude" :reason :mcp-init))))
+    (log/info :claude/driver-fallback :provider "claude" :reason :mcp-init)))
 
 (defn- log-title-side-call! [cfg]
   ;; khgy: Claude Code has no documented flag to skip the per-invocation
@@ -298,7 +306,7 @@
   ;; owns the tool loop against isaac's mcp-bridge.
   (cond-> ["--print"
            "--output-format" (if (or streaming? driven?) "stream-json" "json")]
-    (or streaming? driven?) (conj "--include-partial-messages")
+    (or streaming? driven?) (conj "--include-partial-messages" "--verbose")
     driven? (into ["--input-format" "stream-json"
                    "--strict-mcp-config"
                    "--permission-mode" "bypassPermissions"])
@@ -386,17 +394,32 @@
         :result (or text "")
         :usage  (or usage {})}])))
 
+(defn- stream-json-without-verbose? [arg-map]
+  (and (= "stream-json" (get arg-map "--output-format"))
+       (not (contains? arg-map "--verbose"))))
+
 (defn- simulate-fake-cli! [argv in]
   (let [script    (or @fake-cli* [])
         n         (swap! fake-cycle* inc)
         rows      (cycle-rows script n)
-        json-out? (= "json" (get (argv->arg-map argv) "--output-format"))
+        arg-map   (argv->arg-map argv)
+        json-out? (= "json" (get arg-map "--output-format"))
         text      (or (some #(when (= "text" (:kind %)) (:payload %)) rows) "")]
     (capture-stdin! in)
-    (if json-out?
+    (cond
+      (stream-json-without-verbose? arg-map)
+      {:exit 1 :out "" :err STREAM-JSON-NEEDS-VERBOSE}
+
+      (and (not json-out?) @exit-before-stream*)
+      (let [{:keys [exit err]} @exit-before-stream*]
+        {:exit (or exit 1) :out "" :err (or err "")})
+
+      json-out?
       {:exit 0
        :out  (json/generate-string {:type "result" :result text})
        :err  ""}
+
+      :else
       {:exit 0
        :out  (str/join "\n" (map json/generate-string (cycle-events rows)))
        :err  ""})))
@@ -446,9 +469,20 @@
   (when (:drives-tool-loop? cfg)
     (tool-loop/install-provider-driver! claude-loop-driver)))
 
+(defn- fence-retry! [cfg request]
+  (let [argv   (build-argv cfg request false)
+        prompt (request-stdin cfg request)
+        env    (subprocess-env)]
+    (record-invocation! {:argv argv :env env :in prompt})
+    (run-process! argv env prompt)))
+
+(defn- cli-start-failed? [result]
+  (and (not (zero? (:exit result)))
+       (str/blank? (:out result))))
+
 (defn- invoke! [cfg request streaming?]
   (ensure-driver! cfg)
-  (let [streaming? (and streaming? (not @fail-mcp-init?*))
+  (let [streaming? (and streaming? (not @fail-mcp-init?*) (not @exit-before-stream*))
         argv       (build-argv cfg request streaming?)
         prompt     (request-stdin cfg request)
         env        (subprocess-env)]
@@ -457,7 +491,20 @@
     (install-cancel-hook! cfg)
     (capture-stdin! prompt)
     (record-invocation! {:argv argv :env env :in prompt})
-    (run-process! argv env prompt)))
+    (let [result (run-process! argv env prompt)]
+      (if (and (:drives-tool-loop? cfg)
+               (not @fail-mcp-init?*)
+               (cli-start-failed? result))
+        (do
+          (when (compare-and-set! fallback-logged?* false true)
+            (log/info :claude/driver-fallback
+                      :provider "claude"
+                      :reason :cli-start-failed
+                      :stderr (:err result)))
+          (reset! fail-mcp-init?* true)
+          (reset! exit-before-stream* {:exit (:exit result) :err (:err result)})
+          (fence-retry! cfg request))
+        result))))
 
 (defn- stream-json-event [line]
   (when (seq (str/trim line))
@@ -641,21 +688,18 @@
 
 (defn chat [request _provider-name cfg]
   (ensure-driver! cfg)
-  (maybe-log-fallback! cfg)
-  (let [driven (driven? cfg)
-        result (invoke! cfg request false)]
+  (let [result (invoke! cfg request false)]
     (if (failed? result)
       (error-response result)
-      (if driven
+      (if (driven? cfg)
         (parse-stream-json-response (:out result) (:model request))
         (let [{:keys [text usage]} (parse-json-output (:out result))]
           (success-response (:model request) text usage))))))
 
 (defn chat-stream [request on-chunk _provider-name cfg]
   (ensure-driver! cfg)
-  (maybe-log-fallback! cfg)
-  (let [fence? @fail-mcp-init?*
-        result (invoke! cfg request (not fence?))]
+  (let [result (invoke! cfg request (not @fail-mcp-init?*))
+        fence? (or @fail-mcp-init?* @exit-before-stream*)]
     (if-not (failed? result)
       (if fence?
         (let [{:keys [text usage]} (parse-json-output (:out result))

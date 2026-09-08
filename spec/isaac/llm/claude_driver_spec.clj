@@ -240,4 +240,58 @@
           argv   (:argv (first (sut/invocations)))]
       (should= "fenced" (get-in res [:message :content]))
       (should= "json" (nth argv (inc (.indexOf argv "--output-format"))))
-      (should (neg? (.indexOf argv "--input-format"))))))
+      (should (neg? (.indexOf argv "--input-format")))))
+
+  (it "passes --verbose with stream-json on a driven turn"
+    (sut/set-stub!
+      (constantly {:exit 0
+                   :out  (ndjson [{:type    "assistant"
+                                   :message {:content [{:type "text" :text "ok"}]}}
+                                  (result-line "ok" (usage 10 0 0))])
+                   :err  ""}))
+    (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})]
+      (api/chat api {:model "sonnet" :messages [{:role "user" :content "hi"}]})
+      (let [argv (:argv (first (sut/invocations)))]
+        (should= "stream-json" (nth argv (inc (.indexOf argv "--output-format"))))
+        (should (<= 0 (.indexOf argv "--verbose"))))))
+
+  (it "passes --verbose with stream-json on a streaming turn"
+    (sut/set-stub!
+      (constantly {:exit 0
+                   :out  (ndjson [{:type "content_block_delta" :delta {:text "ok"}}
+                                  (result-line "ok" (usage 10 0 0))])
+                   :err  ""}))
+    (sut/chat-stream {:model "sonnet" :messages [{:role "user" :content "hi"}]}
+                     (fn [_])
+                     "claude"
+                     {:command "claude"})
+    (let [argv (:argv (first (sut/invocations)))]
+      (should= "stream-json" (nth argv (inc (.indexOf argv "--output-format"))))
+      (should (<= 0 (.indexOf argv "--verbose")))))
+
+  (it "fake CLI rejects stream-json without --verbose the way the real CLI does"
+    (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "ok"}])
+    (let [result (#'sut/simulate-fake-cli! ["claude" "--print" "--output-format" "stream-json"] "hi")]
+      (should= 1 (:exit result))
+      (should (str/includes? (:err result) "When using --print, --output-format=stream-json requires --verbose"))
+      (should= "" (:out result))))
+
+  (it "falls back to the fence path when the CLI exits before the first stream event"
+    (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "fenced"}])
+    (sut/exit-before-streaming! 1 "Error: When using --print, --output-format=stream-json requires --verbose")
+    (log/capture-logs
+      (let [api    (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+            res    (api/chat api {:model "sonnet" :messages [{:role "user" :content "fallback"}]})
+            entry  (first (filter #(= :claude/driver-fallback (:event %)) @log/captured-logs))
+            first-argv  (:argv (first (sut/invocations)))
+            second-argv (:argv (second (sut/invocations)))]
+        (should= "fenced" (get-in res [:message :content]))
+        (should-not-be-nil entry)
+        (should= "claude" (:provider entry))
+        (should= :cli-start-failed (:reason entry))
+        (should (re-find #"stream-json requires --verbose" (str (:stderr entry))))
+        (should= 2 (count (sut/invocations)))
+        (should= "stream-json" (nth first-argv (inc (.indexOf first-argv "--output-format"))))
+        (should (<= 0 (.indexOf first-argv "--verbose")))
+        (should= "json" (nth second-argv (inc (.indexOf second-argv "--output-format"))))
+        (should (<= 0 (.indexOf second-argv "--print")))))))
