@@ -609,6 +609,40 @@
             res (api/chat api {:model "sonnet" :messages [{:role "user" :content "ping"}]})]
         (should= "mcp-loop-ok" (get-in res [:message :content])))))
 
+  (it "uses the result event's text once when deltas, the assistant message, and result all carry it"
+    (let [out (ndjson [{:type  "stream_event"
+                        :event {:type  "content_block_delta"
+                                :delta {:type "text_delta" :text "WRONG"}}}
+                       {:type    "assistant"
+                        :message {:content [{:type "text" :text "ALSO-WRONG"}]}}
+                       (result-line "mcp-loop-ok" (usage 2 0 0))])]
+      (sut/set-stub! (constantly {:exit 0 :out out :err ""}))
+      (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+            res (api/chat api {:model "sonnet" :messages [{:role "user" :content "ping"}]})]
+        (should= "mcp-loop-ok" (get-in res [:message :content])))))
+
+  (it "fake CLI emits deltas, an assistant message, and a result_text event for the same reply"
+    (sut/set-fake-cli! [{:cycle 1 :kind "text_delta" :payload "mcp-loop"}
+                        {:cycle 1 :kind "text_delta" :payload "-ok"}
+                        {:cycle 1 :kind "text" :payload "mcp-loop-ok"}
+                        {:cycle 1 :kind "result_text" :payload "mcp-loop-ok"}])
+    (let [envelope (json/generate-string {:type "user" :message {:role "user" :content "ping"}})
+          result   (#'sut/simulate-fake-cli!
+                     ["claude" "--print" "--output-format" "stream-json" "--verbose"]
+                     envelope)
+          events   (map #(json/parse-string % true) (str/split-lines (:out result)))
+          deltas   (filter #(= "stream_event" (:type %)) events)
+          msgs     (filter #(= "assistant" (:type %)) events)
+          results  (filter #(= "result" (:type %)) events)]
+      (should= 2 (count deltas))
+      (should= 1 (count msgs))
+      (should= "mcp-loop-ok" (get-in (first msgs) [:message :content 0 :text]))
+      (should= 1 (count results))
+      (should= "mcp-loop-ok" (:result (last results)))
+      (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+            res (api/chat api {:model "sonnet" :messages [{:role "user" :content "ping"}]})]
+        (should= "mcp-loop-ok" (get-in res [:message :content])))))
+
   (it "fake CLI emits every scripted cycle in one process with a single result event"
     (sut/set-fake-cli! [{:cycle 1 :kind "tool_use" :payload "{\"name\":\"mcp__isaac__exec__run\",\"input\":{\"command\":\"echo one\"}}"}
                         {:cycle 2 :kind "tool_use" :payload "{\"name\":\"mcp__isaac__exec__run\",\"input\":{\"command\":\"echo two\"}}"}

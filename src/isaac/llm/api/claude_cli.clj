@@ -479,6 +479,7 @@
         mcp-status   (some #(when (= "mcp_status" (:kind %))
                               (parse-payload "mcp_status" (:payload %)))
                            rows)
+        result-text  (some #(when (= "result_text" (:kind %)) (:payload %)) rows)
         init         (mcp-init-event mcp-status)]
     (cond
       error-result
@@ -500,11 +501,15 @@
                               text-deltas)
                          [{:type    "message"
                            :message {:role    "assistant"
-                                     :content [{:type "text" :text joined}]}}])
+                                     :content [{:type "text" :text (or text joined)}]}}]
+                         (when text
+                           [{:type    "assistant"
+                             :message {:role    "assistant"
+                                       :content [{:type "text" :text text}]}}]))
          :result-event {:type        "result"
                         :is_error    false
                         :stop_reason "end_turn"
-                        :result      joined
+                        :result      (or result-text text joined)
                         :usage       (or usage {})}})
 
       :else
@@ -528,7 +533,7 @@
                            [{:type    "assistant"
                              :message {:content content}}]))
          :result-event {:type   "result"
-                        :result (or text "")
+                        :result (or result-text text "")
                         :usage  (or usage {})}}))))
 
 (defn- cycle-events [rows]
@@ -946,6 +951,7 @@
         usage        (atom (zero-usage))
         cycle-usages (atom [])
         saw-delta?   (atom false)
+        result-text* (atom nil)
         flush-cycle! (fn [has-tools?]
                        (let [joined (str/join @cycle-text)]
                          (reset! cycle-text [])
@@ -978,12 +984,11 @@
         (reset! usage u))
       (when (result-event? event)
         (flush-cycle! false)
-        (when (and (empty? @texts)
-                   (not (result-error? event))
+        (when (and (not (result-error? event))
                    (seq (str (:result event))))
-          (swap! texts conj (str (:result event))))))
+          (reset! result-text* (str (:result event))))))
     (flush-cycle! false)
-    (let [text  (str/join @texts)
+    (let [text  (or (not-empty @result-text*) (str/join @texts) "")
           tcs   @tool-calls
           think (str/join @reasoning)]
       (cond-> {:message      (cond-> {:role "assistant" :content text}
