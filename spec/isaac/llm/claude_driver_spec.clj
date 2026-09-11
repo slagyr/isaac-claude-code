@@ -418,7 +418,8 @@
         (should (<= 0 idx))
         (should (re-find #"\.json$" (str path)))
         (should= "isaac" (:command server))
-        (should (re-find #"(?s).*mcp-bridge.*--turn.*[0-9a-f-]+.*" argv*)))))
+        (should (re-find #"(?s).*mcp-bridge.*--turn.*[0-9a-f-]+.*" argv*))
+        (should (re-find #"--server http://127\.0\.0\.1:6674/claude/turns" argv*)))))
 
   (it "omits the tool protocol contract from --system-prompt on a driven turn"
     (sut/set-fake-cli! [{:cycle 1 :kind "tool_use" :payload "{\"name\":\"exec__run\",\"input\":{\"command\":\"echo hi\"}}"}
@@ -523,7 +524,7 @@
         (let [saved  (sut/last-mcp-config)
               server (get-in saved [:body :mcpServers :isaac])
               argv*  (str/join " " (concat [(:command server)] (:args server)))]
-          (should (re-find #"(?s).*mcp-bridge.*--turn.*--server http://127\.0\.0\.1:7912.*--token harbor-secret.*" argv*))))))
+          (should (re-find #"(?s).*mcp-bridge.*--turn.*--server http://127\.0\.0\.1:7912/claude/turns.*--token harbor-secret.*" argv*))))))
 
   (it "provider :mcp-server-url and :mcp-token override the running server"
     (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "ok"}])
@@ -536,7 +537,7 @@
         (let [saved  (sut/last-mcp-config)
               server (get-in saved [:body :mcpServers :isaac])
               argv*  (str/join " " (concat [(:command server)] (:args server)))]
-          (should (re-find #"--server http://127\.0\.0\.1:9000" argv*))
+          (should (re-find #"--server http://127\.0\.0\.1:9000/claude/turns" argv*))
           (should (re-find #"--token override-token" argv*))
           (should-not (re-find #"harbor-secret" argv*))))))
 
@@ -548,7 +549,7 @@
         (let [saved  (sut/last-mcp-config)
               server (get-in saved [:body :mcpServers :isaac])
               argv*  (str/join " " (concat [(:command server)] (:args server)))]
-          (should (re-find #"--server http://127\.0\.0\.1:6674" argv*))
+          (should (re-find #"--server http://127\.0\.0\.1:6674/claude/turns" argv*))
           (should-not (re-find #"--token" argv*))))))
 
   (it "does not fall back when init reports isaac pending with zero tools"

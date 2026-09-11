@@ -93,4 +93,5 @@
                          "-s" "isaac.tool.tools-steps"
                          "-s" "isaac.comm.comm-steps"
                          "-s" "isaac.llm.claude-cli-steps"
+                         "-s" "isaac.llm.mcp-route-steps"
                          "-t" "~wip"]}}}

@@ -369,10 +369,14 @@
     (catch Exception _ nil)))
 
 (defn- mcp-server-url [cfg]
-  (or (:mcp-server-url cfg)
-      (:server-url cfg)
-      (let [port (or (get-in (running-server) [:server :port]) 6674)]
-        (str "http://127.0.0.1:" port))))
+  (let [base (or (:mcp-server-url cfg)
+                 (:server-url cfg)
+                 (let [port (or (get-in (running-server) [:server :port]) 6674)]
+                   (str "http://127.0.0.1:" port)))]
+    (let [base (str/replace base #"/+$" "")]
+      (if (str/ends-with? base "/claude/turns")
+        base
+        (str base "/claude/turns")))))
 
 (defn- mcp-server-token [cfg]
   (or (:mcp-token cfg)

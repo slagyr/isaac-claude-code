@@ -5,6 +5,11 @@
  :isaac.agent/llm-api
  {:claude-cli {:factory isaac.llm.api.claude-cli/make}}
 
+ :isaac.server/route
+ [{:method  :post
+   :path    "/claude/turns/:id"
+   :handler isaac.llm.mcp-route/handle}]
+
  :isaac.agent/provider-template
  {:claude {:template {:api                        "claude-cli"
                       :auth                       "none"

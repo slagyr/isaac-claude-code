@@ -243,7 +243,7 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | --mcp-config        | #".*\.json"    |
     And the MCP config handed to the fake Claude Code names server "isaac" running:
       | argv                                   |
-      | #"(?s).*mcp-bridge.*--turn.*[0-9a-f-]+.*" |
+      | #"(?s).*mcp-bridge.*--turn.*[0-9a-f-]+.*--server http://127\.0\.0\.1:6674/claude/turns.*" |
 
   Scenario: a driven turn's system prompt carries no textual tool-call protocol (isaac-lrvb)
     On the driven path the tools are native MCP tools; teaching the fence
@@ -296,7 +296,7 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
     Then the response is "hi came back"
     And the MCP config handed to the fake Claude Code names server "isaac" running:
       | argv                                                                              |
-      | #"(?s).*mcp-bridge.*--turn.*--server http://127\.0\.0\.1:7912.*--token harbor-secret.*" |
+      | #"(?s).*mcp-bridge.*--turn.*--server http://127\.0\.0\.1:7912/claude/turns.*--token harbor-secret.*" |
 
   Scenario: a pending MCP server at init is not a failure — the turn proceeds and the tools arrive (isaac-o2fh)
     Claude Code emits its init event before the stdio server has answered;
