@@ -12,7 +12,7 @@
       (should= [{:method  :post
                  :path    "/claude/turns/:id"
                  :handler 'isaac.llm.mcp-route/handle}]
-               (:isaac.server/route manifest))))
+               (:isaac.http/route manifest))))
 
   (it "returns the turn registry result as JSON"
     (with-redefs [sut/handle-turn (fn [turn-id message]

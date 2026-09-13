@@ -13,9 +13,9 @@
                               io.github.slagyr/isaac-foundation {:local/root "../isaac-foundation"}
                               io.github.slagyr/isaac-foundation-spec {:local/root "../isaac-foundation/spec"}
                               io.github.slagyr/isaac-foundation-test-support {:local/root "../isaac-foundation/spec-support"}
-                              io.github.slagyr/isaac-server {:local/root "../isaac-server"}
-                              io.github.slagyr/isaac-server-spec {:local/root "../isaac-server/spec"}
-                              io.github.slagyr/isaac-server-test-support {:local/root "../isaac-server/spec-support"}
+                              io.github.slagyr/isaac-http {:local/root "../isaac-http"}
+                              io.github.slagyr/isaac-http-spec {:local/root "../isaac-http/spec"}
+                              io.github.slagyr/isaac-http-test-support {:local/root "../isaac-http/spec-support"}
                               marigold.bridge/marigold.bridge {:local/root "../isaac-foundation/modules/marigold.bridge"}
                               marigold.longwave/marigold.longwave {:local/root "../isaac-foundation/modules/marigold.longwave"}}}
 
@@ -29,12 +29,12 @@
                       io.github.slagyr/isaac-agent-spec {:git/url "https://github.com/slagyr/isaac-agent.git"
                                                          :git/sha "e0f932b236c10eb32a06e290e5b4b5c3339c0c45"
                                                          :deps/root "spec"}
-                      io.github.slagyr/isaac-server {:git/url "https://github.com/slagyr/isaac-server.git"
+                      io.github.slagyr/isaac-http {:git/url "https://github.com/slagyr/isaac-http.git"
                                                      :git/sha "fa395438031f034cd2ba2b8d305e9d094c9a1fd5"}
-                      io.github.slagyr/isaac-server-spec {:git/url "https://github.com/slagyr/isaac-server.git"
+                      io.github.slagyr/isaac-http-spec {:git/url "https://github.com/slagyr/isaac-http.git"
                                                           :git/sha "fa395438031f034cd2ba2b8d305e9d094c9a1fd5"
                                                           :deps/root "spec"}
-                      io.github.slagyr/isaac-server-test-support {:git/url "https://github.com/slagyr/isaac-server.git"
+                      io.github.slagyr/isaac-http-test-support {:git/url "https://github.com/slagyr/isaac-http.git"
                                                                   :git/sha "fa395438031f034cd2ba2b8d305e9d094c9a1fd5"
                                                                   :deps/root "spec-support"}
                       speclj/speclj {:mvn/version "3.13.0"}
@@ -53,12 +53,12 @@
                      "spec/isaac/llm/claude_cli_real_spec.clj"]}
 
   :features {:extra-paths ["spec"]
-             :extra-deps {io.github.slagyr/isaac-server {:git/url "https://github.com/slagyr/isaac-server.git"
+             :extra-deps {io.github.slagyr/isaac-http {:git/url "https://github.com/slagyr/isaac-http.git"
                                                          :git/sha "fa395438031f034cd2ba2b8d305e9d094c9a1fd5"}
-                           io.github.slagyr/isaac-server-spec {:git/url "https://github.com/slagyr/isaac-server.git"
+                           io.github.slagyr/isaac-http-spec {:git/url "https://github.com/slagyr/isaac-http.git"
                                                                :git/sha "fa395438031f034cd2ba2b8d305e9d094c9a1fd5"
                                                                :deps/root "spec"}
-                           io.github.slagyr/isaac-server-test-support {:git/url "https://github.com/slagyr/isaac-server.git"
+                           io.github.slagyr/isaac-http-test-support {:git/url "https://github.com/slagyr/isaac-http.git"
                                                                        :git/sha "fa395438031f034cd2ba2b8d305e9d094c9a1fd5"
                                                                        :deps/root "spec-support"}
                            io.github.slagyr/isaac-foundation-spec {:git/url "https://github.com/slagyr/isaac-foundation.git"

@@ -766,12 +766,12 @@
       (sequential? tools) (count tools)
       :else 0)))
 
-(defn- isaac-server [init]
+(defn- isaac-http [init]
   (let [servers (or (:mcp_servers init) (:mcpServers init) [])]
     (first (filter #(= "isaac" (str (:name %))) servers))))
 
 (defn- isaac-status [init]
-  (str (:status (isaac-server init))))
+  (str (:status (isaac-http init))))
 
 (defn- isaac-failed? [init]
   (= "failed" (isaac-status init)))
