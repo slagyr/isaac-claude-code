@@ -14,13 +14,13 @@
                                                 :git/sha "ad0a97b7f039814dc92916299baf3c07a5b86f3a"
                                                 :deps/root "spec"}
         io.github.slagyr/isaac-foundation-test-support {:git/url "https://github.com/slagyr/isaac-foundation.git"
-                                                        :git/sha "ad0a97b7f039814dc92916299baf3c07a5b86f3a"
+                                                        :git/sha "43cf46e00087bf066a9e065ccc3d48dd2814ac23"
                                                         :deps/root "spec-support"}
         marigold.bridge/marigold.bridge {:git/url "https://github.com/slagyr/isaac-foundation.git"
-                                         :git/sha "ad0a97b7f039814dc92916299baf3c07a5b86f3a"
+                                         :git/sha "0b9ecdf0cdc46c5c965d158a323d70bed87559bd"
                                          :deps/root "modules/marigold.bridge"}
         marigold.longwave/marigold.longwave {:git/url "https://github.com/slagyr/isaac-foundation.git"
-                                             :git/sha "ad0a97b7f039814dc92916299baf3c07a5b86f3a"
+                                             :git/sha "0b9ecdf0cdc46c5c965d158a323d70bed87559bd"
                                              :deps/root "modules/marigold.longwave"}
         io.github.slagyr/isaac-agent {:git/url "https://github.com/slagyr/isaac-agent.git"
                                       :git/sha "e0f932b236c10eb32a06e290e5b4b5c3339c0c45"}
