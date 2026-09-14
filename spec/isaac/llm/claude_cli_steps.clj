@@ -134,7 +134,7 @@
                   (edn/read-string (fs/slurp fs* path))
                   {})]
       (fs/mkdirs fs* (fs/parent path))
-      (fs/spit fs* path (pr-str (assoc-in cfg [:modules :isaac.llm.claude] coord))))))
+      (fs/spit fs* path (pr-str (assoc-in cfg [:modules :isaac.provider.claude-code] coord))))))
 
 (defn- install-stub! [f]
   (declare-module!)
