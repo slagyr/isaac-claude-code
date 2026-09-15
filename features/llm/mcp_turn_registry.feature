@@ -1,7 +1,7 @@
-Feature: Claude's per-turn tool registry over HTTP
-  Claude Code receives Isaac tools through an MCP route owned by this module.
-  The per-turn registry remains in the agent; this module exposes it at
-  POST /claude/turns/{id} for the provider-driven loop.
+Feature: Claude's per-turn tool registry
+  Claude Code receives Isaac tools through the per-turn listener the driver
+  opens in the process that owns the turn (isaac-ejj3). The registry remains
+  in the agent; the listener serves it to the bridge for that turn only.
 
   Background:
     Given default Grover setup

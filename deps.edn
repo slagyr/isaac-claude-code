@@ -5,7 +5,8 @@
         io.github.slagyr/isaac-agent {:git/url "https://github.com/slagyr/isaac-agent.git"
                                       :git/sha "8aecfc3a57fef0803c35f81bd4a3f76292b227f1"}
         cheshire/cheshire {:mvn/version "5.13.0"}
-        babashka/process {:mvn/version "0.5.22"}}
+        babashka/process {:mvn/version "0.5.22"}
+        http-kit/http-kit {:mvn/version "2.8.0"}}
 
  :aliases
  {:dev-local {:override-deps {io.github.slagyr/isaac-agent {:local/root "../isaac-agent"}
@@ -50,7 +51,10 @@
          :main-opts ["-m" "speclj.main" "-c"
                      "spec/isaac/llm/claude_cli_spec.clj"
                      "spec/isaac/llm/claude_driver_spec.clj"
-                     "spec/isaac/llm/claude_cli_real_spec.clj"]}
+                     "spec/isaac/llm/claude_cli_real_spec.clj"
+                     "spec/isaac/llm/manifest_spec.clj"
+                     "spec/isaac/llm/mcp_listener_spec.clj"
+                     "spec/isaac/mcp_bridge/main_spec.clj"]}
 
   :features {:extra-paths ["spec"]
              :extra-deps {io.github.slagyr/isaac-http {:git/url "https://github.com/slagyr/isaac-http.git"
@@ -93,5 +97,6 @@
                          "-s" "isaac.tool.tools-steps"
                          "-s" "isaac.comm.comm-steps"
                          "-s" "isaac.llm.claude-cli-steps"
-                         "-s" "isaac.llm.mcp-route-steps"
+                         "-s" "isaac.llm.mcp-turn-steps"
+                         "-s" "isaac.config.config-steps"
                          "-t" "~wip"]}}}

@@ -8,7 +8,7 @@
     [isaac.llm.followup :as followup]
     [isaac.llm.prompt.builder :as prompt]
     [isaac.llm.tool-loop :as tool-loop]
-    [isaac.config.loader :as config-loader]
+    [isaac.llm.mcp-listener :as mcp-listener]
     [isaac.logger :as log]
     [isaac.mcp.turns :as mcp-turns]))
 
@@ -363,31 +363,19 @@
 (defn- subprocess-env []
   (dissoc (into {} (System/getenv)) "ANTHROPIC_API_KEY"))
 
-(defn- running-server []
-  (try
-    (config-loader/snapshot "mcp-bridge")
-    (catch Exception _ nil)))
+(def ^:private nonce-env "ISAAC_MCP_NONCE")
 
-(defn- mcp-server-url [cfg]
-  (let [base (or (:mcp-server-url cfg)
-                 (:server-url cfg)
-                 (let [port (or (get-in (running-server) [:server :port]) 6674)]
-                   (str "http://127.0.0.1:" port)))]
-    (let [base (str/replace base #"/+$" "")]
-      (if (str/ends-with? base "/claude/turns")
-        base
-        (str base "/claude/turns")))))
+(defn- bridge-classpath []
+  ;; The invoking process's own classpath — bb and the JVM both report it here.
+  (System/getProperty "java.class.path"))
 
-(defn- mcp-server-token [cfg]
-  (or (:mcp-token cfg)
-      (get-in (running-server) [:server :auth :token])))
-
-(defn- write-mcp-config! [turn-id cfg]
+(defn- write-mcp-config! [turn-id url]
   (let [file (java.io.File/createTempFile "isaac-mcp-" ".json")
-        args (cond-> ["mcp-bridge" "--turn" turn-id "--server" (mcp-server-url cfg)]
-               (seq (mcp-server-token cfg)) (into ["--token" (mcp-server-token cfg)]))
-        body {:mcpServers {:isaac {:command "isaac"
-                                   :args    args}}}]
+        body {:mcpServers {:isaac {:command "bb"
+                                   :args    ["-cp" (bridge-classpath)
+                                             "-m" "isaac.mcp-bridge.main"
+                                             "--turn" turn-id
+                                             "--url" url]}}}]
     (spit file (json/generate-string body))
     (reset! last-mcp-config* {:path (.getAbsolutePath file) :body body})
     (.getAbsolutePath file)))
@@ -412,10 +400,14 @@
                                     :tool-fn     tool-fn
                                     :tools       tools})
       (catch Exception _))
-    {:turn-id turn-id :path (write-mcp-config! turn-id cfg)}))
+    (let [{:keys [url nonce]} (mcp-listener/open! turn-id)]
+      {:turn-id turn-id
+       :nonce   nonce
+       :path    (write-mcp-config! turn-id url)})))
 
 (defn- cleanup-mcp-turn! [{:keys [turn-id]}]
   (when turn-id
+    (try (mcp-listener/close! turn-id) (catch Exception _))
     (try (mcp-turns/clear! turn-id) (catch Exception _))))
 
 (defn- build-argv [cfg request streaming? mcp-config-path]
@@ -844,7 +836,8 @@
                      (register-mcp-turn! cfg request))
         argv       (build-argv cfg request streaming? (:path mcp))
         prompt     (request-stdin cfg request)
-        env        (subprocess-env)]
+        env        (cond-> (subprocess-env)
+                     mcp (assoc nonce-env (:nonce mcp)))]
     (maybe-log-fallback! cfg)
     (log-title-side-call! cfg)
     (install-cancel-hook! cfg)

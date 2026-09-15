@@ -7,6 +7,7 @@
     [isaac.fs :as fs]
     [isaac.tool.tools-steps :as tools-steps]
     [isaac.llm.api.claude-cli :as claude-cli]
+    [isaac.llm.api.protocol :as api]
     [isaac.nexus :as nexus]
     [isaac.session.session-steps :as session-steps]
     [isaac.step-tables :as match]))
@@ -109,6 +110,10 @@
           (when (contains? env "ANTHROPIC_API_KEY")
             (swap! failures conj "ANTHROPIC_API_KEY present in subprocess env"))
 
+          (= arg "(ISAAC_MCP_NONCE in env)")
+          (when (str/blank? (get env "ISAAC_MCP_NONCE"))
+            (swap! failures conj "ISAAC_MCP_NONCE missing from subprocess env"))
+
           (str/starts-with? arg "--")
           (if (str/blank? value)
             (when-not (contains? arg-map arg)
@@ -134,7 +139,13 @@
                   (edn/read-string (fs/slurp fs* path))
                   {})]
       (fs/mkdirs fs* (fs/parent path))
-      (fs/spit fs* path (pr-str (assoc-in cfg [:modules :isaac.provider.claude-code] coord))))))
+      (fs/spit fs* path (pr-str (assoc-in cfg [:modules :isaac.provider.claude-code] coord)))))
+  ;; Agent's `the user sends` step builds the provider without a module index,
+  ;; so it cannot activate this module to register its api. Register the
+  ;; manifest's llm-api entries as activation would; before the :claude-code
+  ;; rename, agent's built-in :claude template masked this gap (isaac-ejj3).
+  (doseq [entry (:isaac.agent/llm-api (edn/read-string (slurp "src/isaac-manifest.edn")))]
+    (api/register-api-entry! entry)))
 
 (defn- install-stub! [f]
   (declare-module!)
