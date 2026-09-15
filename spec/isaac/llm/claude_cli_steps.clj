@@ -7,6 +7,8 @@
     [isaac.fs :as fs]
     [isaac.tool.tools-steps :as tools-steps]
     [isaac.llm.api.claude-cli :as claude-cli]
+    [isaac.llm.api.protocol :as api]
+    [isaac.llm.providers :as providers]
     [isaac.nexus :as nexus]
     [isaac.session.session-steps :as session-steps]
     [isaac.step-tables :as match]))
@@ -109,6 +111,10 @@
           (when (contains? env "ANTHROPIC_API_KEY")
             (swap! failures conj "ANTHROPIC_API_KEY present in subprocess env"))
 
+          (= arg "(ISAAC_MCP_NONCE in env)")
+          (when (str/blank? (get env "ISAAC_MCP_NONCE"))
+            (swap! failures conj "ISAAC_MCP_NONCE missing from subprocess env"))
+
           (str/starts-with? arg "--")
           (if (str/blank? value)
             (when-not (contains? arg-map arg)
@@ -134,7 +140,12 @@
                   (edn/read-string (fs/slurp fs* path))
                   {})]
       (fs/mkdirs fs* (fs/parent path))
-      (fs/spit fs* path (pr-str (assoc-in cfg [:modules :isaac.provider.claude-code] coord))))))
+      (fs/spit fs* path (pr-str (assoc-in cfg [:modules :isaac.provider.claude-code] coord)))
+      (providers/register! "claude-code" {:api                        "claude-cli"
+                                           :auth                       "none"
+                                           :command                    "claude"
+                                           :stream-supports-tool-calls false
+                                           :drives-tool-loop?          true}))))
 
 (defn- install-stub! [f]
   (declare-module!)
@@ -316,6 +327,11 @@
 
 (g/before-scenario
   (fn []
+    (providers/register! "claude-code" {:api                        "claude-cli"
+                                         :auth                       "none"
+                                         :command                    "claude"
+                                         :stream-supports-tool-calls false
+                                         :drives-tool-loop?          true})
     (claude-cli/clear-stub!)
     (claude-cli/clear-invocations!)
     (claude-cli/clear-fake-cli!)))
@@ -399,6 +415,11 @@
 (defn fake-claude-code-scripted [table]
   (declare-module!)
   (g/dissoc! :feature-config)
+  (api/register! :claude-cli claude-cli/make)
+  (g/update! :provider-configs #(assoc (or % {}) "claude-code" {:api "claude-cli"
+                                                                  :command "claude"
+                                                                  :drives-tool-loop? true
+                                                                  :stream-supports-tool-calls false}))
   (claude-cli/clear-invocations!)
   (claude-cli/clear-stub!)
   (claude-cli/set-fake-cli! (parse-script-table table)))

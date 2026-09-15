@@ -20,14 +20,14 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
     And config:
       | key        | value  |
       | log.output | memory |
-    And the isaac EDN file "config/providers/claude.edn" exists with:
+    And the isaac EDN file "config/providers/claude-code.edn" exists with:
       | path              | value  |
       | command           | claude |
       | drives-tool-loop? | true   |
     And the isaac EDN file "config/models/sub-sonnet.edn" exists with:
       | path     | value  |
       | model    | sonnet |
-      | provider | claude |
+      | provider | claude-code |
     And the isaac EDN file "config/crew/thinker.edn" exists with:
       | path  | value       |
       | model | sub-sonnet  |
@@ -56,7 +56,7 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | main | 320               | 580               |
     And the log has entries matching:
       | event             | provider | driver   |
-      | :turn/loop-driver | claude   | provider |
+      | :turn/loop-driver | claude-code | provider |
 
   Scenario: a multi-cycle turn persists pairs in feed order
     Given a fake Claude Code on the path scripted with:
@@ -227,10 +227,9 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | user | user         | two                               |
     And the fake Claude Code received no bare stdin lines
 
-  Scenario: a driven turn writes an MCP config that points Claude Code at isaac's mcp-bridge for this turn (isaac-6z4r)
-    --strict-mcp-config without --mcp-config gives Claude Code no tools at all.
-    The driver must register the turn and hand the CLI a config whose isaac
-    server runs `isaac mcp-bridge` for that turn id.
+  Scenario: a driven turn's MCP config runs the bridge under bb against this turn's own listener (isaac-ejj3)
+    The bridge is not an isaac command: it runs with the invoking process's
+    classpath and talks to the per-turn listener that process opened.
     Given a fake Claude Code on the path scripted with:
       | cycle | kind     | payload                                            |
       | 1     | tool_use | {"name":"exec__run","input":{"command":"echo hi"}} |
@@ -242,8 +241,8 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | --strict-mcp-config |                |
       | --mcp-config        | #".*\.json"    |
     And the MCP config handed to the fake Claude Code names server "isaac" running:
-      | argv                                   |
-      | #"(?s).*mcp-bridge.*--turn.*[0-9a-f-]+.*--server http://127\.0\.0\.1:6674/claude/turns.*" |
+      | argv                                                                                               |
+      | #"^bb -cp .+ -m isaac\.mcp-bridge\.main --turn [0-9a-f-]{36} --url http://127\.0\.0\.1:[0-9]+$" |
 
   Scenario: a driven turn's system prompt carries no textual tool-call protocol (isaac-lrvb)
     On the driven path the tools are native MCP tools; teaching the fence
@@ -279,11 +278,7 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | --print          |       |
       | --output-format  | json  |
 
-  Scenario: the MCP config carries the running server's own URL and auth token (isaac-o2fh)
-    The bridge must reach the server the driver runs inside of: the URL comes
-    from the server's bound port (config :server :port, default 6674) and the
-    token from the server's configured auth token — never from unrelated env
-    names or a hard-coded port.
+  Scenario: the turn's nonce reaches Claude Code only through its environment, never the server's port or token (isaac-ejj3)
     Given the isaac EDN file "config/isaac.edn" exists with:
       | path              | value          |
       | server.port       | 7912           |
@@ -294,9 +289,36 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | 2     | text     | hi came back                                       |
     When the user sends "run it" on session "main"
     Then the response is "hi came back"
+    And the fake Claude Code was invoked with:
+      | arg                      | value |
+      | (ISAAC_MCP_NONCE in env) |       |
     And the MCP config handed to the fake Claude Code names server "isaac" running:
-      | argv                                                                              |
-      | #"(?s).*mcp-bridge.*--turn.*--server http://127\.0\.0\.1:7912/claude/turns.*--token harbor-secret.*" |
+      | argv                                                         |
+      | #"^(?!.*7912)(?!.*harbor-secret)(?!.*--token)(?!.*NONCE).+$" |
+
+  Scenario: a provider of type claude-code under another name drives the turn (isaac-ejj3)
+    Given the isaac EDN file "config/providers/harbor.edn" exists with:
+      | path              | value       |
+      | type              | claude-code |
+      | command           | claude      |
+      | drives-tool-loop? | true        |
+    And the isaac EDN file "config/models/harbor-sonnet.edn" exists with:
+      | path     | value  |
+      | model    | sonnet |
+      | provider | harbor |
+    And the isaac EDN file "config/crew/deckhand.edn" exists with:
+      | path  | value         |
+      | model | harbor-sonnet |
+      | soul  | Think hard.   |
+    And the following sessions exist:
+      | name   | crew     |
+      | harbor | deckhand |
+    And a fake Claude Code on the path scripted with:
+      | cycle | kind | payload        |
+      | 1     | text | harbor answers |
+    When the user sends "ahoy" on session "harbor"
+    Then the response is "harbor answers"
+    And the fake Claude Code was invoked exactly once
 
   Scenario: a pending MCP server at init is not a failure — the turn proceeds and the tools arrive (isaac-o2fh)
     Claude Code emits its init event before the stdio server has answered;

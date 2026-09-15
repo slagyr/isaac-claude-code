@@ -2,11 +2,12 @@
   (:require
     [cheshire.core :as json]
     [clojure.string :as str]
-    [isaac.config.loader :as config-loader]
     [isaac.llm.api.claude-cli :as sut]
     [isaac.llm.api.protocol :as api]
+    [isaac.llm.mcp-listener :as mcp-listener]
     [isaac.llm.tool-loop :as tool-loop]
     [isaac.logger :as log]
+    [isaac.mcp.turns :as mcp-turns]
     [speclj.core :refer :all]))
 
 (defn- ndjson [events]
@@ -405,21 +406,40 @@
                                 (or (get-in evt [:message :content]) [])))
                         events))))
 
-  (it "passes --mcp-config pointing at a temp json that runs isaac mcp-bridge for a turn"
+  (it "passes --mcp-config that runs the bridge under bb against this turn's listener"
     (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "ok"}])
     (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})]
       (api/chat api {:model "sonnet" :messages [{:role "user" :content "hi"}]})
-      (let [argv    (:argv (first (sut/invocations)))
-            idx     (.indexOf argv "--mcp-config")
-            path    (when (<= 0 idx) (nth argv (inc idx)))
-            saved   (sut/last-mcp-config)
-            server  (get-in saved [:body :mcpServers :isaac])
-            argv*   (str/join " " (concat [(:command server)] (:args server)))]
+      (let [invocation (first (sut/invocations))
+            argv       (:argv invocation)
+            idx        (.indexOf argv "--mcp-config")
+            path       (when (<= 0 idx) (nth argv (inc idx)))
+            saved      (sut/last-mcp-config)
+            server     (get-in saved [:body :mcpServers :isaac])
+            args       (:args server)
+            bridge-url (nth args (inc (.indexOf args "--url")))
+            nonce      (get-in invocation [:env "ISAAC_MCP_NONCE"])]
         (should (<= 0 idx))
         (should (re-find #"\.json$" (str path)))
-        (should= "isaac" (:command server))
-        (should (re-find #"(?s).*mcp-bridge.*--turn.*[0-9a-f-]+.*" argv*))
-        (should (re-find #"--server http://127\.0\.0\.1:6674/claude/turns" argv*)))))
+        (should= "bb" (:command server))
+        (should= "-cp" (first args))
+        (should-not (str/blank? (second args)))
+        (should= ["-m" "isaac.mcp-bridge.main"] (subvec args 2 4))
+        (should (re-find #"http://127\.0\.0\.1:\d+" bridge-url))
+        (should-not (str/blank? nonce))
+        (should-not (str/includes? (pr-str (:body saved)) nonce)))))
+
+  (it "stops the listener and clears the registry when the driven turn ends"
+    (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "ok"}])
+    (let [stopped (atom [])
+          cleared (atom [])]
+      (with-redefs [mcp-listener/start! (fn [_] {:url "http://127.0.0.1:7000" :nonce "reef"})
+                    mcp-listener/stop!  #(swap! stopped conj %)
+                    mcp-turns/clear!    #(swap! cleared conj %)]
+        (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})]
+          (api/chat api {:model "sonnet" :messages [{:role "user" :content "hi"}]})))
+      (should= 1 (count @stopped))
+      (should= @stopped @cleared)))
 
   (it "omits the tool protocol contract from --system-prompt on a driven turn"
     (sut/set-fake-cli! [{:cycle 1 :kind "tool_use" :payload "{\"name\":\"exec__run\",\"input\":{\"command\":\"echo hi\"}}"}
@@ -516,41 +536,19 @@
         (should= "stream-json" (nth first-argv (inc (.indexOf first-argv "--output-format"))))
         (should= "json" (nth second-argv (inc (.indexOf second-argv "--output-format")))))))
 
-  (it "writes --server from the running server's port and --token from its auth token"
+  (it "ignores configured server endpoints and tokens"
     (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "ok"}])
-    (with-redefs [config-loader/snapshot (constantly {:server {:port 7912 :auth {:token "harbor-secret"}}})]
-      (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})]
-        (api/chat api {:model "sonnet" :messages [{:role "user" :content "hi"}]})
-        (let [saved  (sut/last-mcp-config)
-              server (get-in saved [:body :mcpServers :isaac])
-              argv*  (str/join " " (concat [(:command server)] (:args server)))]
-          (should (re-find #"(?s).*mcp-bridge.*--turn.*--server http://127\.0\.0\.1:7912/claude/turns.*--token harbor-secret.*" argv*))))))
-
-  (it "provider :mcp-server-url and :mcp-token override the running server"
-    (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "ok"}])
-    (with-redefs [config-loader/snapshot (constantly {:server {:port 7912 :auth {:token "harbor-secret"}}})]
-      (let [api (sut/make "claude" {:command        "claude"
-                                    :drives-tool-loop? true
-                                    :mcp-server-url "http://127.0.0.1:9000"
-                                    :mcp-token      "override-token"})]
-        (api/chat api {:model "sonnet" :messages [{:role "user" :content "hi"}]})
-        (let [saved  (sut/last-mcp-config)
-              server (get-in saved [:body :mcpServers :isaac])
-              argv*  (str/join " " (concat [(:command server)] (:args server)))]
-          (should (re-find #"--server http://127\.0\.0\.1:9000/claude/turns" argv*))
-          (should (re-find #"--token override-token" argv*))
-          (should-not (re-find #"harbor-secret" argv*))))))
-
-  (it "defaults --server to 127.0.0.1:6674 when no server config is set"
-    (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "ok"}])
-    (with-redefs [config-loader/snapshot (constantly nil)]
-      (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})]
-        (api/chat api {:model "sonnet" :messages [{:role "user" :content "hi"}]})
-        (let [saved  (sut/last-mcp-config)
-              server (get-in saved [:body :mcpServers :isaac])
-              argv*  (str/join " " (concat [(:command server)] (:args server)))]
-          (should (re-find #"--server http://127\.0\.0\.1:6674/claude/turns" argv*))
-          (should-not (re-find #"--token" argv*))))))
+    (let [api (sut/make "claude" {:command        "claude"
+                                  :drives-tool-loop? true
+                                  :mcp-server-url "http://127.0.0.1:9000"
+                                  :mcp-token      "harbor-secret"})]
+      (api/chat api {:model "sonnet" :messages [{:role "user" :content "hi"}]})
+      (let [server (get-in (sut/last-mcp-config) [:body :mcpServers :isaac])
+            argv*  (str/join " " (concat [(:command server)] (:args server)))]
+        (should-not (str/includes? argv* "9000"))
+        (should-not (str/includes? argv* "harbor-secret"))
+        (should-not (str/includes? argv* "--server"))
+        (should-not (str/includes? argv* "--token")))))
 
   (it "does not fall back when init reports isaac pending with zero tools"
     (sut/set-fake-cli! [{:cycle 1 :kind "mcp_status" :payload "{\"mcp_servers\":[{\"name\":\"isaac\",\"status\":\"pending\"}],\"tools\":[]}"}

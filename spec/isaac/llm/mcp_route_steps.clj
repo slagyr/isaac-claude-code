@@ -1,12 +1,14 @@
 (ns isaac.llm.mcp-route-steps
   (:require
+    [babashka.http-client :as http]
+    [babashka.process :as process]
     [cheshire.core :as json]
     [clojure.string :as str]
     [gherclj.core :as g :refer [defgiven defthen defwhen helper!]]
     [isaac.comm.null :as null-comm]
     [isaac.config.loader :as loader]
     [isaac.drive.turn :as drive-turn]
-    [isaac.llm.mcp-route :as mcp-route]
+    [isaac.llm.mcp-listener :as mcp-listener]
     [isaac.mcp.turns :as mcp-turns]
     [isaac.nexus :as nexus]
     [isaac.session.store.spi :as store]
@@ -16,7 +18,9 @@
 
 (helper! isaac.llm.mcp-route-steps)
 
-(g/after-scenario (fn [] (mcp-turns/clear-all!)))
+(g/after-scenario (fn []
+                    (mcp-listener/stop-all!)
+                    (mcp-turns/clear-all!)))
 
 (defn- session-store []
   (or (store/registered-store) (nexus/get-in [:sessions :store])))
@@ -53,15 +57,36 @@
   (let [allowed (allowed-tools)]
     (mcp-turns/register! turn-id {:session-key session-key
                                   :tool-fn     (drive-tool-fn session-key allowed)
-                                  :tools       (tools-for-allow allowed)})))
+                                  :tools       (tools-for-allow allowed)})
+    (g/update! :mcp-listeners assoc turn-id (mcp-listener/start! turn-id))))
 
 (defn turn-cleared [turn-id]
   (mcp-turns/clear! turn-id))
 
 (defn request-posted [path body]
-  (let [id       (last (str/split path #"/"))
-        response (mcp-route/handle {:route-params {:id id} :body body})]
+  (let [id              (last (str/split path #"/"))
+        {:keys [url nonce]} (get (g/get :mcp-listeners) id)
+        response        (http/post url {:body body
+                                                        :headers {"Authorization" (str "Bearer " nonce)
+                                                                  "Content-Type" "application/json"}})]
     (g/assoc! :mcp-response (json/parse-string (:body response) true))))
+
+(defn environment-variable-is [name value]
+  (g/update! :environment assoc name value))
+
+(defn bridge-relays [turn-id body]
+  (let [{:keys [url nonce]} (get (g/get :mcp-listeners) turn-id)
+        nonce              (or (get (g/get :environment) "ISAAC_MCP_NONCE") nonce)
+        result             (process/shell {:continue true
+                                           :env      (assoc (into {} (System/getenv)) "ISAAC_MCP_NONCE" nonce)
+                                           :in       body
+                                           :out      :string
+                                           :err      :string}
+                                          "bb" "-cp" (System/getProperty "java.class.path")
+                                          "-m" "isaac.mcp-bridge.main" "--turn" turn-id "--url" url)
+        line               (last (str/split-lines (:out result)))]
+    (g/should= 0 (:exit result))
+    (g/assoc! :mcp-response (json/parse-string line true))))
 
 (defn response-matches [table]
   (g/should= [] (:failures (match/match-object table (g/get :mcp-response)))))
@@ -72,8 +97,14 @@
 (defgiven "the turn {turn-id:string} is cleared"
   isaac.llm.mcp-route-steps/turn-cleared)
 
+(defgiven "environment variable {name:string} is {value:string}"
+  isaac.llm.mcp-route-steps/environment-variable-is)
+
 (defwhen "an MCP request is posted to {path:string}:"
   isaac.llm.mcp-route-steps/request-posted)
+
+(defwhen "the mcp bridge relays for turn {turn-id:string}:"
+  isaac.llm.mcp-route-steps/bridge-relays)
 
 (defthen "the MCP response matches:"
   isaac.llm.mcp-route-steps/response-matches)
