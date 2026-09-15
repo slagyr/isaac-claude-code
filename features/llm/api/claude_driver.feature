@@ -425,3 +425,23 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
     And session "main" has transcript matching:
       | type    | message.role | message.content |
       | message | assistant    | mcp-loop-ok     |
+
+  @wip
+  Scenario: a driven turn reports context size from its last cycle (isaac-g71i)
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind     | payload                                                                            |
+      | 1     | tool_use | {"name":"exec__run","input":{"command":"echo hi"}}                                 |
+      | 1     | usage    | {"input_tokens":200,"cache_read_input_tokens":50,"cache_creation_input_tokens":10} |
+      | 2     | text     | hi came back                                                                       |
+      | 2     | usage    | {"input_tokens":260,"cache_read_input_tokens":60,"cache_creation_input_tokens":0}  |
+    When the user sends "run it" on session "main"
+    Then the response is "hi came back"
+    And the last provider response matches:
+      | key                     | value        |
+      | content                 | hi came back |
+      | stop-reason             | :end-turn    |
+      | usage.prompt-tokens     | 320          |
+      | usage.cache-read-tokens | 60           |
+    And the following sessions match:
+      | name | last-input-tokens | turn-input-tokens |
+      | main | 320               | 580               |
