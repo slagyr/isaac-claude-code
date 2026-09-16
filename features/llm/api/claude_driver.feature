@@ -426,7 +426,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | type    | message.role | message.content |
       | message | assistant    | mcp-loop-ok     |
 
-  @wip
   Scenario: a driven turn reports context size from its last cycle (isaac-g71i)
     Given a fake Claude Code on the path scripted with:
       | cycle | kind     | payload                                                                            |

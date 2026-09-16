@@ -224,7 +224,7 @@ Feature: Claude subscription provider via CLI shell-out
     When the user sends "What is 2+2?" on session "main"
     Then the response is "4"
     And session "main" has transcript matching:
-      | #index | type    | message.role | message.usage.input-tokens | message.usage.output-tokens |
+      | #index | type    | message.role | message.usage.prompt-tokens | message.usage.output-tokens |
       | -1     | message | assistant    | 120                        | 15                          |
     And the claude binary was invoked exactly once with:
       | arg                      | value |
@@ -239,15 +239,15 @@ Feature: Claude subscription provider via CLI shell-out
     When the user sends "hi" on session "main"
     Then the response streams as ["Hi", " there"]
     And session "main" has transcript matching:
-      | #index | type    | message.role | message.usage.input-tokens | message.usage.output-tokens | message.usage.cache-read | message.usage.cache-write |
-      | -1     | message | assistant    | 42                         | 7                           | 3                        | 1                         |
+      | #index | type    | message.role | message.usage.prompt-tokens | message.usage.output-tokens | message.usage.cache-read-tokens | message.usage.cache-write-tokens |
+      | -1     | message | assistant    | 46                         | 7                           | 3                        | 1                         |
 
   Scenario: missing usage in json output still completes with zero usage
     Given the claude binary is stubbed to return json without usage "ok"
     When the user sends "hi" on session "main"
     Then the response is "ok"
     And session "main" has transcript matching:
-      | #index | type    | message.role | message.usage.input-tokens | message.usage.output-tokens |
+      | #index | type    | message.role | message.usage.prompt-tokens | message.usage.output-tokens |
       | -1     | message | assistant    | 0                          | 0                           |
 
   @wip

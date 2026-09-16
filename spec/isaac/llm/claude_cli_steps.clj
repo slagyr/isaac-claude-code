@@ -144,8 +144,7 @@
       (providers/register! "claude-code" {:api                        "claude-cli"
                                            :auth                       "none"
                                            :command                    "claude"
-                                           :stream-supports-tool-calls false
-                                           :drives-tool-loop?          true}))))
+                                           :stream-supports-tool-calls false}))))
 
 (defn- install-stub! [f]
   (declare-module!)
@@ -268,6 +267,7 @@
         result (g/get :llm-result)]
     (g/should= expected (or (not-empty output)
                             (:content result)
+                            (get-in result [:response :content])
                             (get-in result [:message :content])
                             (get-in result [:response :message :content])))))
 
@@ -276,8 +276,7 @@
   (let [expected (parse-stream-chunks raw)
         events   (->> (or (some-> (g/get :channel-events) deref) [])
                       (filter #(#{"text-chunk" "chatter"} (:event %)))
-                      (mapv :text))
-        joined   (apply str expected)]
+                      (mapv :text))]
     (g/should= expected events)))
 
 (defn crew-has-tools [raw]
@@ -330,8 +329,7 @@
     (providers/register! "claude-code" {:api                        "claude-cli"
                                          :auth                       "none"
                                          :command                    "claude"
-                                         :stream-supports-tool-calls false
-                                         :drives-tool-loop?          true})
+                                         :stream-supports-tool-calls false})
     (claude-cli/clear-stub!)
     (claude-cli/clear-invocations!)
     (claude-cli/clear-fake-cli!)))

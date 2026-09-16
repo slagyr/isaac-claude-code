@@ -49,7 +49,7 @@
           (pending (str "no claude login present: " (:message res)))
           (do
             (should-not (:error res))
-            (should (seq (str/trim (or (get-in res [:message :content]) ""))))))))))
+            (should (seq (str/trim (or (:content res) ""))))))))))
 
 (describe "claude-cli real response carries nonzero usage (isaac-l70j)"
   (tags :real :slow)
@@ -72,7 +72,7 @@
           (do
             (should-not (:error res))
             (let [usage (:usage res)]
-              (should (pos? (or (:input-tokens usage) 0)))
+              (should (pos? (or (:prompt-tokens usage) 0)))
               (should (pos? (or (:output-tokens usage) 0))))))))))
 
 (describe "claude-cli witnessed tool roundtrip (isaac-ozv9)"
@@ -121,6 +121,6 @@
           (do
             (should @executed?)
             (should (pos? (count (:tool-calls result))))
-            (let [content (str/trim (or (get-in result [:response :message :content]) ""))]
+            (let [content (str/trim (or (get-in result [:response :content]) ""))]
               (should (str/includes? content nonce))
               (should-not (str/includes? content "isn't available")))))))))

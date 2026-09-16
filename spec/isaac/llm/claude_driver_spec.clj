@@ -83,10 +83,10 @@
                       :on-cycle (fn [phase n _] (swap! on-cycle conj [phase n]))})]
         (should= [["exec__run" {:command "echo hi"}]] @tool-runs)
         (should= 1 (count (sut/invocations)))
-        (should= "hi came back" (get-in result [:response :message :content]))
+        (should= "hi came back" (get-in result [:response :content]))
         (let [u (get-in result [:response :usage])]
-          (should= 320 (+ (:input-tokens u) (:cache-read u) (:cache-write u))))
-        (should= 580 (:input-tokens (:token-counts result)))
+          (should= 320 (:prompt-tokens u)))
+        (should= 580 (:prompt-tokens (:usage result)))
         (should= [[:start 1] [:end 1] [:start 2] [:end 2]] @on-cycle))))
 
   (it "still folds cache into turn token-counts when the global driver was cleared after make"
@@ -103,7 +103,7 @@
                      {:model "sonnet" :messages [{:role "user" :content "run it"}]}
                      (fn [_name _args] "hi\n")
                      {:api api})]
-        (should= 580 (:input-tokens (:token-counts result))))))
+        (should= 580 (:prompt-tokens (:usage result))))))
 
   (it "does not treat a fake CLI as LoopDriver without drives-tool-loop?"
     (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "ok"}])
@@ -125,7 +125,7 @@
                    (fn [_name _args] "hi\n")
                    {:api api})]
       (should (:drives-tool-loop? (api/config api)))
-      (should= 580 (:input-tokens (:token-counts result)))))
+      (should= 580 (:prompt-tokens (:usage result)))))
 
   (it "survives augment-provider remake that drops extra-args and command"
     (sut/set-stub!
@@ -172,9 +172,9 @@
       (sut/chat-stream {:model "sonnet" :messages [{:role "user" :content "think"}]}
                        (fn [chunk] (swap! chunks conj chunk))
                        "claude"
-                       {:command "claude"})
-      (should (some #(= "weighing the options" (:reasoning %)) @chunks))
-      (should (some #(= "here is my answer" (get-in % [:message :content])) @chunks))))
+                       {:command "claude" :stream-non-tool-turns true})
+      (should (some #(= "weighing the options" (:reasoning-delta %)) @chunks))
+      (should (some #(= "here is my answer" (:text-delta %)) @chunks))))
 
   (it "logs that no title-generation CLI switch was found on a driven turn"
     (sut/set-stub!
@@ -200,7 +200,7 @@
             _   (sut/fail-mcp-init!)
             res (api/chat api {:model "sonnet" :messages [{:role "user" :content "fallback"}]})
             entry (first (filter #(= :claude/driver-fallback (:event %)) @log/captured-logs))]
-        (should= "fenced" (get-in res [:message :content]))
+        (should= "fenced" (:content res))
         (should-not-be-nil entry)
         (should= "claude" (:provider entry))
         (should= :mcp-init (:reason entry))
@@ -220,7 +220,7 @@
                                   "claude"
                                   {:command "claude" :drives-tool-loop? true})
           argv   (:argv (first (sut/invocations)))]
-      (should= "fenced" (get-in res [:message :content]))
+      (should= "fenced" (:content res))
       (should= "json" (nth argv (inc (.indexOf argv "--output-format"))))
       (should (neg? (.indexOf argv "--input-format")))))
 
@@ -246,7 +246,7 @@
     (sut/chat-stream {:model "sonnet" :messages [{:role "user" :content "hi"}]}
                      (fn [_])
                      "claude"
-                     {:command "claude"})
+                     {:command "claude" :stream-non-tool-turns true})
     (let [argv (:argv (first (sut/invocations)))]
       (should= "stream-json" (nth argv (inc (.indexOf argv "--output-format"))))
       (should (<= 0 (.indexOf argv "--verbose")))))
@@ -267,7 +267,7 @@
             entry  (first (filter #(= :claude/driver-fallback (:event %)) @log/captured-logs))
             first-argv  (:argv (first (sut/invocations)))
             second-argv (:argv (second (sut/invocations)))]
-        (should= "fenced" (get-in res [:message :content]))
+        (should= "fenced" (:content res))
         (should-not-be-nil entry)
         (should= "claude" (:provider entry))
         (should= :cli-start-failed (:reason entry))
@@ -297,10 +297,10 @@
         (let [api      (sut/make "claude" {:command "claude" :drives-tool-loop? true})
               res      (api/chat api {:model "sonnet" :messages [{:role "user" :content "Reply with exactly: pong"}]})
               exit-log (first (filter #(= :claude/driver-exit (:event %)) @log/captured-logs))]
-          (should= "pong" (get-in res [:message :content]))
-          (should= 2 (:input-tokens (:usage res)))
-          (should= 3289 (:cache-read (:usage res)))
-          (should= 5473 (:cache-write (:usage res)))
+          (should= "pong" (:content res))
+          (should= 8764 (:prompt-tokens (:usage res)))
+          (should= 3289 (:cache-read-tokens (:usage res)))
+          (should= 5473 (:cache-write-tokens (:usage res)))
           (should-not-be-nil exit-log)
           (should= "claude" (:provider exit-log))
           (should= 0 (:exit-code exit-log))
@@ -500,7 +500,7 @@
                                     :tools    [{:type "function" :function {:name "exec__run"}}]})
             status   (first (filter #(= :claude/mcp-status (:event %)) @log/captured-logs))
             fallback (first (filter #(= :claude/driver-fallback (:event %)) @log/captured-logs))]
-        (should= "ok" (get-in res [:message :content]))
+        (should= "ok" (:content res))
         (should-not-be-nil status)
         (should= 1 (:tools status))
         (should (re-find #"(?s).*isaac.*connected.*" (str (:servers status))))
@@ -561,12 +561,12 @@
                                     :tools    [{:type "function" :function {:name "exec__run"}}]})
             status   (first (filter #(= :claude/mcp-status (:event %)) @log/captured-logs))
             fallback (first (filter #(= :claude/driver-fallback (:event %)) @log/captured-logs))]
-        (should= "hi came back" (get-in res [:message :content]))
+        (should= "hi came back" (:content res))
         (should-not-be-nil status)
         (should (re-find #"(?s).*isaac.*pending.*" (str (:servers status))))
         (should-be-nil fallback)
         (should= 1 (count (sut/invocations)))
-        (should (seq (get-in res [:message :tool_calls]))))))
+        (should (seq (:tool-calls res))))))
 
   (it "maps mcp__isaac__ tool names to isaac names and does not re-dispatch tool-fn"
     (let [tool-runs (atom [])
@@ -590,7 +590,7 @@
                      {:api api})]
         (should= [] @tool-runs)
         (should= 1 (count (sut/invocations)))
-        (should= "hi came back" (get-in result [:response :message :content]))
+        (should= "hi came back" (get-in result [:response :content]))
         (should= "exec__run" (:name (first (:tool-calls result)))))))
 
   (it "assembles the reply from text_delta chunks once when the trailing message repeats them"
@@ -606,7 +606,7 @@
       (sut/set-stub! (constantly {:exit 0 :out out :err ""}))
       (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})
             res (api/chat api {:model "sonnet" :messages [{:role "user" :content "ping"}]})]
-        (should= "mcp-loop-ok" (get-in res [:message :content])))))
+        (should= "mcp-loop-ok" (:content res)))))
 
   (it "uses the result event's text once when deltas, the assistant message, and result all carry it"
     (let [out (ndjson [{:type  "stream_event"
@@ -618,7 +618,7 @@
       (sut/set-stub! (constantly {:exit 0 :out out :err ""}))
       (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})
             res (api/chat api {:model "sonnet" :messages [{:role "user" :content "ping"}]})]
-        (should= "mcp-loop-ok" (get-in res [:message :content])))))
+        (should= "mcp-loop-ok" (:content res)))))
 
   (it "fake CLI emits deltas, an assistant message, and a result_text event for the same reply"
     (sut/set-fake-cli! [{:cycle 1 :kind "text_delta" :payload "mcp-loop"}
@@ -640,7 +640,7 @@
       (should= "mcp-loop-ok" (:result (last results)))
       (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})
             res (api/chat api {:model "sonnet" :messages [{:role "user" :content "ping"}]})]
-        (should= "mcp-loop-ok" (get-in res [:message :content])))))
+        (should= "mcp-loop-ok" (:content res)))))
 
   (it "fake CLI emits every scripted cycle in one process with a single result event"
     (sut/set-fake-cli! [{:cycle 1 :kind "tool_use" :payload "{\"name\":\"mcp__isaac__exec__run\",\"input\":{\"command\":\"echo one\"}}"}
@@ -675,7 +675,7 @@
       (sut/set-stub! (constantly {:exit 0 :out out :err ""}))
       (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})
             res (api/chat api {:model "sonnet" :messages [{:role "user" :content "run it"}]})]
-        (should= "hi came back" (get-in res [:message :content]))
+        (should= "hi came back" (:content res))
         (should= "exec__run" (:name (first (:tool-calls res))))))
 
   (it "fake CLI keeps cycle-1 chatter as :asides and cycle-2 text as the reply"
@@ -684,7 +684,7 @@
                         {:cycle 2 :kind "text" :payload "hi came back"}])
     (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})
           res (api/chat api {:model "sonnet" :messages [{:role "user" :content "run it"}]})]
-      (should= "hi came back" (get-in res [:message :content]))
+      (should= "hi came back" (:content res))
       (should= ["OK"] (:asides res))
       (should= "exec__run" (:name (first (:tool-calls res))))))
 
@@ -707,7 +707,7 @@
                                                       :n       n
                                                       :content (get-in payload [:message :content])
                                                       :tools   (mapv :name (or (:tool-calls payload) []))}))})]
-        (should= "hi came back" (get-in result [:response :message :content]))
+        (should= "hi came back" (get-in result [:response :content]))
         (should= [{:phase :start :n 1 :content nil :tools []}
                   {:phase :end :n 1 :content "OK" :tools ["exec__run"]}
                   {:phase :tool}

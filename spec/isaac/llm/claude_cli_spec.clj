@@ -28,12 +28,12 @@
     (let [res (sut/chat {:model "sonnet" :messages [{:role "user" :content "yo"}]}
                         "claude"
                         {:command "claude"})]
-      (should= "hi" (get-in res [:message :content]))))
+      (should= "hi" (:content res))))
 
   (it "invokes via Api protocol"
     (let [p   (sut/make "claude" {:command "claude"})
           res (api/chat p {:model "sonnet" :messages [{:role "user" :content "yo"}]})]
-      (should= "hi" (get-in res [:message :content]))))
+      (should= "hi" (:content res))))
 
   (it "streams NDJSON deltas"
     (let [out (str/join "\n"
@@ -44,10 +44,10 @@
           chunks (atom [])]
       (sut/chat-stream {:model "sonnet" :messages [{:role "user" :content "hi"}]}
                        (fn [chunk]
-                         (when-let [piece (get-in chunk [:message :content])]
+                         (when-let [piece (:text-delta chunk)]
                            (swap! chunks conj piece)))
                        "claude"
-                       {:command "claude"})
+                       {:command "claude" :stream-non-tool-turns true})
       (should= ["Hello" " " "world"] @chunks)))
 
   (it "streams deltas through stream-response"
@@ -56,10 +56,10 @@
                                 {:type "content_block_delta" :delta {:text %}})
                              ["Hello" " " "world"]))
           _   (sut/set-stub! (constantly {:exit 0 :out out :err ""}))
-          p   (sut/make "claude" {:command "claude"})
+          p   (sut/make "claude" {:command "claude" :stream-non-tool-turns true})
           chunks (atom [])]
       (drive-turn/stream-response! p {:model "sonnet" :messages [{:role "user" :content "hi"}]}
-                             (fn [piece] (swap! chunks conj piece)))
+                                   (fn [piece] (swap! chunks conj piece)))
       (should= ["Hello" " " "world"] @chunks)))
 
   (it "forwards extra-args in argv"
@@ -150,11 +150,11 @@
                    :err  ""}))
     (let [res (sut/chat {:model "sonnet" :messages [{:role "user" :content "yo"}]}
                         "claude" {:command "claude"})]
-      (should= "answer" (get-in res [:message :content]))
-      (should= 50 (:input-tokens (:usage res)))
+      (should= "answer" (:content res))
+      (should= 53 (:prompt-tokens (:usage res)))
       (should= 9 (:output-tokens (:usage res)))
-      (should= 2 (:cache-read (:usage res)))
-      (should= 1 (:cache-write (:usage res)))))
+      (should= 2 (:cache-read-tokens (:usage res)))
+      (should= 1 (:cache-write-tokens (:usage res)))))
 
   (it "degrades to zero usage when json omits usage"
     (sut/set-stub!
@@ -163,8 +163,8 @@
                    :err  ""}))
     (let [res (sut/chat {:model "sonnet" :messages [{:role "user" :content "yo"}]}
                         "claude" {:command "claude"})]
-      (should= "ok" (get-in res [:message :content]))
-      (should= 0 (:input-tokens (:usage res)))
+      (should= "ok" (:content res))
+      (should= 0 (:prompt-tokens (:usage res)))
       (should= 0 (:output-tokens (:usage res)))))
 
   (it "uses stream-json terminal result usage"
@@ -175,9 +175,9 @@
                                                 :usage  {:input_tokens 10 :output_tokens 2}})])
           _   (sut/set-stub! (constantly {:exit 0 :out out :err ""}))
           res (sut/chat-stream {:model "sonnet" :messages [{:role "user" :content "hi"}]}
-                               (fn [_]) "claude" {:command "claude"})]
-      (should= "Hi" (get-in res [:message :content]))
-      (should= 10 (:input-tokens (:usage res)))
+                               (fn [_]) "claude" {:command "claude" :stream-non-tool-turns true})]
+      (should= "Hi" (:content res))
+      (should= 10 (:prompt-tokens (:usage res)))
       (should= 2 (:output-tokens (:usage res))))))
 
 (describe "claude-cli persisted transcript usage (isaac-l70j)"
@@ -199,13 +199,14 @@
     (let [res (sut/chat {:model "sonnet" :messages [{:role "user" :content "yo"}]}
                         "claude"
                         {:command "claude"})]
-      (drive-turn/process-response! "claude-ns-usage" {:response res}
+      (drive-turn/process-response! "claude-ns-usage"
+                                    {:response res :usage (assoc (:usage res) :requests 1)}
                                     {:model "sonnet" :provider "claude"})
       (let [assistant (-> (session-helper/get-transcript transcript-test-dir "claude-ns-usage")
                           last
                           :message)
             usage (:usage assistant)]
-        (should (pos? (:input-tokens usage)))
+        (should (pos? (:prompt-tokens usage)))
         (should (pos? (:output-tokens usage))))))
 
   (it "streaming terminal usage persists nonzero fields on the assistant transcript entry"
@@ -219,12 +220,13 @@
       (let [res (sut/chat-stream {:model "sonnet" :messages [{:role "user" :content "hi"}]}
                                  (fn [_])
                                  "claude"
-                                 {:command "claude"})]
-        (drive-turn/process-response! "claude-stream-usage" {:response res}
+                                 {:command "claude" :stream-non-tool-turns true})]
+        (drive-turn/process-response! "claude-stream-usage"
+                                      {:response res :usage (assoc (:usage res) :requests 1)}
                                       {:model "sonnet" :provider "claude"})
         (let [assistant (-> (session-helper/get-transcript transcript-test-dir "claude-stream-usage")
                             last
                             :message)
               usage (:usage assistant)]
-          (should (pos? (:input-tokens usage)))
+          (should (pos? (:prompt-tokens usage)))
           (should (pos? (:output-tokens usage))))))))

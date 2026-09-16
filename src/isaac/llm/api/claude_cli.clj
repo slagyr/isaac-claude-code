@@ -243,7 +243,7 @@
     (if open-idx (subs text 0 open-idx) text)))
 
 (defn- zero-usage []
-  {:input-tokens 0 :output-tokens 0 :cache-read 0 :cache-write 0})
+  {:prompt-tokens 0 :output-tokens 0})
 
 (defn- parse-cli-usage [usage]
   (when (and (map? usage)
@@ -251,26 +251,28 @@
                  (contains? usage :output_tokens)
                  (contains? usage :cache_read_input_tokens)
                  (contains? usage :cache_creation_input_tokens)))
-    {:input-tokens  (or (:input_tokens usage) 0)
-     :output-tokens (or (:output_tokens usage) 0)
-     :cache-read    (or (:cache_read_input_tokens usage) 0)
-     :cache-write   (or (:cache_creation_input_tokens usage) 0)}))
+    (let [cache-read  (or (:cache_read_input_tokens usage) 0)
+          cache-write (or (:cache_creation_input_tokens usage) 0)]
+      {:prompt-tokens      (+ (or (:input_tokens usage) 0) cache-read cache-write)
+       :output-tokens      (or (:output_tokens usage) 0)
+       :cache-read-tokens  cache-read
+       :cache-write-tokens cache-write})))
 
 (defn- normalize-usage [usage]
   (cond
     (not (map? usage)) (zero-usage)
-    (contains? usage :input-tokens) usage
+    (contains? usage :prompt-tokens) usage
     :else (or (parse-cli-usage usage) (zero-usage))))
 
 (defn- success-response [model text usage]
   (let [tool-calls (parse-tool-calls text)
         content    (visible-text text)
         usage*     (normalize-usage usage)]
-    {:message    (cond-> {:role "assistant" :content content}
-                   (seq tool-calls) (assoc :tool_calls tool-calls))
-     :model      model
-     :tool-calls tool-calls
-     :usage      usage*}))
+    {:content     content
+     :model       model
+     :stop-reason (if (seq tool-calls) :tool-use :end-turn)
+     :tool-calls  tool-calls
+     :usage       usage*}))
 
 (defn- parse-json-output [out]
   (try
@@ -987,9 +989,9 @@
     (let [text  (or (not-empty @result-text*) (str/join @texts) "")
           tcs   @tool-calls
           think (str/join @reasoning)]
-      (cond-> {:message      (cond-> {:role "assistant" :content text}
-                               (seq tcs) (assoc :tool_calls tcs))
+      (cond-> {:content      text
                :model        model
+               :stop-reason  :end-turn
                :tool-calls   tcs
                :usage        @usage
                :cycle-usages @cycle-usages}
@@ -1000,45 +1002,29 @@
 
 ;; region ----- LoopDriver -----
 
-(defn- prompt-tokens [usage]
-  (+ (or (:input-tokens usage) 0)
-     (or (:cache-read usage) 0)
-     (or (:cache-write usage) 0)))
+(defn- add-usage [turn-usage request-usage]
+  (-> (merge-with + turn-usage request-usage)
+      (update :requests inc)))
 
-(defn- usage->token-counts [usage]
-  {:input-tokens  (prompt-tokens usage)
-   :output-tokens (or (:output-tokens usage) 0)
-   :cache-read    (or (:cache-read usage) 0)
-   :cache-write   (or (:cache-write usage) 0)})
-
-(defn- empty-token-counts []
-  {:input-tokens 0 :output-tokens 0 :cache-read 0 :cache-write 0})
+(defn- empty-turn-usage []
+  {:requests 0 :prompt-tokens 0 :output-tokens 0})
 
 (defn- fire-on-cycle! [on-cycle phase n payload]
   (when on-cycle (on-cycle phase n payload)))
 
 (defn- cycle-response [response tool-calls content]
-  (if (seq tool-calls)
-    (-> response
-        (dissoc :asides)
-        (assoc :tool-calls tool-calls)
-        (assoc-in [:message :tool_calls] tool-calls)
-        (assoc-in [:message :content] (or content "")))
-    (-> response
-        (dissoc :asides)
-        (assoc :tool-calls [])
-        (assoc-in [:message :content] (or content (get-in response [:message :content]) ""))
-        (update :message #(dissoc (or % {}) :tool_calls)))))
+  (-> response
+      (dissoc :asides :cycle-usages)
+      (assoc :content (or content (:content response) ""))
+      (assoc :stop-reason (if (seq tool-calls) :tool-use :end-turn))
+      (assoc :tool-calls tool-calls)))
 
 (defn claude-loop-driver
   "Provider-driven tool loop for claude-cli. One CLI process per turn: chat-fn
    is invoked once and runs to the result event. MCP tools execute through the
    registry (isaac-zocg); the driver maps mcp__isaac__ names to isaac names and
-   never re-dispatches through the drive's tool-fn. Token-counts accumulate
-   provider-prompt tokens (input + cache_read + cache_creation) into
-   :input-tokens so last-input-tokens/turn-input-tokens match isaac-vuto
-   decision 5. Cache fields stay on the map because store-response!/
-   extract-tokens re-read :input-tokens as raw input and add cache separately."
+   never re-dispatches through the drive's tool-fn. Returns the same normalized
+   loop-result and turn-usage contract as the default tool loop."
   [chat-fn _followup-fn request tool-fn {:keys [cancelled? on-cycle]
                                          :or   {cancelled? (constantly false)}}]
   (reset! drive-tool-fn* tool-fn)
@@ -1048,7 +1034,7 @@
         (terminate-cli!)
         {:response     nil
          :tool-calls   []
-         :token-counts (empty-token-counts)
+         :usage        (empty-turn-usage)
          :cancelled?   true})
       (let [tool-calls*        (atom [])
             cycle-n*           (atom 0)
@@ -1063,7 +1049,9 @@
                     :before (when (seq tcs)
                               (reset! live-tool-cycles?* true)
                               (fire-on-cycle! on-cycle :end @cycle-n*
-                                              (cycle-response {:message {:role "assistant" :content (or aside "")}}
+                                              (cycle-response {:content (or aside "")
+                                                               :model (:model request)
+                                                               :usage (zero-usage)}
                                                               tcs
                                                               aside)))
                     :after (when-not (cancelled?)
@@ -1075,16 +1063,12 @@
             response
             (let [tool-calls (mapv (fn [tc]
                                      (assoc tc :name (isaac-tool-name (:name tc))))
-                                   (or (:tool-calls response)
-                                       (get-in response [:message :tool_calls])
-                                       []))
+                                   (:tool-calls response))
                   usage      (or (:usage response) (zero-usage))
                   usages     (not-empty (or (:cycle-usages response) []))
-                  tokens     (if usages
-                               (reduce (fn [acc u] (merge-with + acc (usage->token-counts u)))
-                                       (empty-token-counts)
-                                       usages)
-                               (usage->token-counts usage))
+                  turn-usage (if usages
+                               (reduce add-usage (empty-turn-usage) usages)
+                               (add-usage (empty-turn-usage) usage))
                   cancelled  (boolean (cancelled?))]
               (reset! tool-calls* tool-calls)
               (if cancelled
@@ -1092,7 +1076,7 @@
                   (terminate-cli!)
                   {:response     nil
                    :tool-calls   tool-calls
-                   :token-counts tokens
+                   :usage        turn-usage
                    :cancelled?   true})
                 (let [asides (vec (or (:asides response) []))]
                   (when-not @live-tool-cycles?*
@@ -1104,7 +1088,7 @@
                     (fire-on-cycle! on-cycle :end @cycle-n* final)
                     {:response     final
                      :tool-calls   tool-calls
-                     :token-counts tokens}))))))))
+                     :usage        turn-usage}))))))))
     (finally
       (reset! drive-tool-fn* nil)
       (reset! on-driven-tool-cycle* nil))))
@@ -1125,39 +1109,40 @@
 
 (defn chat-stream [request on-chunk _provider-name cfg]
   (ensure-driver! cfg)
-  (let [result (invoke! cfg request (not @fail-mcp-init?*))
-        fence? (or @fail-mcp-init?* @exit-before-stream*)]
+  (let [streaming? (and (not @fail-mcp-init?*)
+                        (or (driven? cfg)
+                            (:stream-non-tool-turns cfg)
+                            (:streamNonToolTurns cfg)))
+        result     (invoke! cfg request streaming?)
+        json?      (or (not streaming?) @fail-mcp-init?* @exit-before-stream*)]
     (if-not (failed? result)
-      (if fence?
+      (if json?
         (let [{:keys [text usage]} (parse-json-output (:out result))
               response (success-response (:model request) text usage)]
           (when (seq text)
-            (on-chunk {:message {:role "assistant" :content text} :done false}))
-          (on-chunk {:done true})
+            (on-chunk {:text-delta text}))
           response)
         (let [lines   (str/split-lines (:out result))
               {:keys [deltas reasoning usage]} (parse-stream-json-output lines)
               parsed  (parse-stream-json-response (:out result) (:model request))
               content (or (not-empty (str/join deltas))
-                          (get-in parsed [:message :content])
+                          (:content parsed)
                           "")]
           (doseq [think reasoning]
             (when (seq think)
-              (on-chunk {:reasoning think})))
+              (on-chunk {:reasoning-delta think})))
           (doseq [delta deltas]
             (when (seq delta)
-              (on-chunk {:message {:role "assistant" :content delta} :done false})))
+              (on-chunk {:text-delta delta})))
           (let [response (if (seq (:tool-calls parsed))
                            parsed
                            (success-response (:model request) content usage))]
-            (on-chunk {:done true})
             (cond-> response
               (seq reasoning) (assoc :reasoning {:summary (str/join reasoning)})))))
       (error-response result))))
 
 (defn followup-messages [request response tool-calls tool-results]
-  (let [assistant-msg (or (:message response)
-                          {:role "assistant" :content ""})
+  (let [assistant-msg {:role "assistant" :content (:content response "")}
         result-msgs   (mapv (fn [tc result]
                               {:role    "user"
                                :content (str "Tool result for " (:name tc) ": " result)})
