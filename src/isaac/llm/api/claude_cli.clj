@@ -290,9 +290,19 @@
 (defn- auth-failure? [out err]
   (boolean (re-find auth-failure-re (str (or out "") "\n" (or err "")))))
 
+(def ^:private error-message-cap 500)
+
+(defn- clip-error [s]
+  (let [s (str/trim (str s))
+        n (count s)]
+    (cond
+      (str/blank? s) nil
+      (<= n error-message-cap) s
+      :else (str (subs s 0 error-message-cap) "… truncated " (- n error-message-cap) " bytes"))))
+
 (defn- error-message [result]
-  (or (not-empty (str/trim (str (:err result))))
-      (not-empty (str/trim (str (:out result))))
+  (or (clip-error (:err result))
+      (clip-error (:out result))
       "claude binary failed"))
 
 (defn- error-response

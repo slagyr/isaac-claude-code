@@ -138,6 +138,14 @@
       (should (str/includes? (:message res) "claude: boom"))
       (should-not (:unavailable? res))))
 
+  (it "clips a huge stdout dump on nonzero exit"
+    (sut/set-stub! (constantly {:exit 1 :out (apply str (repeat 8000 "x")) :err ""}))
+    (let [res (sut/chat {:model "sonnet" :messages [{:role "user" :content "hi"}]}
+                        "claude" {:command "claude"})]
+      (should= :llm-error (:error res))
+      (should (< (count (:message res)) 600))
+      (should (str/includes? (:message res) "truncated"))))
+
   (it "parses json result text and usage"
     (sut/set-stub!
       (constantly {:exit 0
