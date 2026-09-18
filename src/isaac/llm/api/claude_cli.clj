@@ -229,12 +229,19 @@
             end        (str/index-of after-open tool-call-close)]
         (if end
           (let [payload (subs after-open 0 end)
-                parsed  (json/parse-string payload true)]
-            (recur (subs after-open (+ end (count tool-call-close)))
-                   (conj calls {:id        (str (java.util.UUID/randomUUID))
-                                :name      (:name parsed)
-                                :arguments (or (:arguments parsed) {})
-                                :raw       parsed})))
+                parsed  (try (json/parse-string payload true)
+                             (catch Exception _ nil))
+                rest*   (subs after-open (+ end (count tool-call-close)))]
+            ;; A fence whose payload is not a JSON object is prose that
+            ;; happens to contain the marker (a summary of earlier tool
+            ;; calls, for instance) — never a tool call. (isaac-t098)
+            (if (and (map? parsed) (:name parsed))
+              (recur rest*
+                     (conj calls {:id        (str (java.util.UUID/randomUUID))
+                                  :name      (:name parsed)
+                                  :arguments (or (:arguments parsed) {})
+                                  :raw       parsed}))
+              (recur rest* calls)))
           calls))
       calls)))
 
@@ -264,9 +271,14 @@
     (contains? usage :prompt-tokens) usage
     :else (or (parse-cli-usage usage) (zero-usage))))
 
-(defn- success-response [model text usage]
-  (let [tool-calls (parse-tool-calls text)
-        content    (visible-text text)
+(defn- success-response
+  "Only a request that offered tools can get a tool call back; for a
+   tool-less request (compaction, title side-calls) the text is content
+   in full, even when it quotes a `<tool_call>` marker. (isaac-t098)"
+  [model text usage & [request]]
+  (let [fenced?    (boolean (seq (:tools request)))
+        tool-calls (if fenced? (parse-tool-calls text) [])
+        content    (if fenced? (visible-text text) text)
         usage*     (normalize-usage usage)]
     {:content     content
      :model       model
@@ -285,10 +297,37 @@
       {:text (or out "") :usage (zero-usage)})))
 
 (def ^:private auth-failure-re
-  #"(?i)not logged in|please run\s*/login|invalid api key|not authenticated|no credentials|unauthorized")
+  #"(?i)not logged in|please run\s*/login|invalid api key|not authenticated|no credentials|unauthorized|failed to authenticate|oauth session expired")
+
+(declare parse-stream-events result-event? result-error?)
+
+(defn- cli-result-event
+  "The CLI's own verdict: the last `result` event of a stream-json run, or
+   the single document of a `--output-format json` run. nil when stdout
+   carries no structured result (bare CLI chatter such as a login prompt)."
+  [out]
+  (or (last (filter result-event? (parse-stream-events out)))
+      (let [parsed (try (json/parse-string (str/trim (or out "")) true)
+                        (catch Exception _ nil))]
+        (when (and (map? parsed) (result-event? parsed))
+          parsed))))
+
+(defn- cli-own-text
+  "Text the CLI itself produced, never the model's words: stderr, plus the
+   result event's error text when it reports an error, plus raw stdout only
+   when there is no structured result at all. A completed run's summary is
+   content — it may legitimately discuss 'Unauthorized' (isaac-t098)."
+  [out err]
+  (let [evt (cli-result-event out)]
+    (str (or err "")
+         "\n"
+         (cond
+           (nil? evt)          (or out "")
+           (result-error? evt) (str (:result evt))
+           :else               ""))))
 
 (defn- auth-failure? [out err]
-  (boolean (re-find auth-failure-re (str (or out "") "\n" (or err "")))))
+  (boolean (re-find auth-failure-re (cli-own-text out err))))
 
 (def ^:private error-message-cap 500)
 
@@ -302,6 +341,7 @@
 
 (defn- error-message [result]
   (or (clip-error (:err result))
+      (some-> (cli-result-event (:out result)) :result str clip-error)
       (clip-error (:out result))
       "claude binary failed"))
 
@@ -315,11 +355,13 @@
     (assoc :unavailable? true :reason :auth)))
 
 (defn- failed?
-  "A run failed when the process exited nonzero OR the output is a login/auth
-   failure that the CLI otherwise reports on a zero exit (the empty-success
-   disease this bean fixes)."
+  "A run failed when the process exited nonzero, OR the CLI's own result
+   event says is_error, OR the CLI's own text is a login/auth failure it
+   reports on a zero exit (the empty-success disease, isaac-kn7y). The
+   model's content is never consulted (isaac-t098)."
   [result]
   (or (not (zero? (:exit result)))
+      (boolean (some-> (cli-result-event (:out result)) result-error?))
       (auth-failure? (:out result) (:err result))))
 
 ;; endregion ^^^^^ Prompt / Response ^^^^^
@@ -875,7 +917,8 @@
           (and (:drives-tool-loop? cfg)
                (not @fail-mcp-init?*)
                (or (mcp-failed? init request)
-                   (reply-contains-fence? result)))
+                   (and (seq (:tools request))
+                        (reply-contains-fence? result))))
           (fence-fallback! cfg request result :mcp-failed)
 
           :else result))
@@ -1115,7 +1158,7 @@
       (if (driven? cfg)
         (parse-stream-json-response (:out result) (:model request))
         (let [{:keys [text usage]} (parse-json-output (:out result))]
-          (success-response (:model request) text usage))))))
+          (success-response (:model request) text usage request))))))
 
 (defn chat-stream [request on-chunk _provider-name cfg]
   (ensure-driver! cfg)
@@ -1128,7 +1171,7 @@
     (if-not (failed? result)
       (if json?
         (let [{:keys [text usage]} (parse-json-output (:out result))
-              response (success-response (:model request) text usage)]
+              response (success-response (:model request) text usage request)]
           (when (seq text)
             (on-chunk {:text-delta text}))
           response)
@@ -1146,7 +1189,7 @@
               (on-chunk {:text-delta delta})))
           (let [response (if (seq (:tool-calls parsed))
                            parsed
-                           (success-response (:model request) content usage))]
+                           (success-response (:model request) content usage request))]
             (cond-> response
               (seq reasoning) (assoc :reasoning {:summary (str/join reasoning)})))))
       (error-response result))))
