@@ -327,3 +327,112 @@ Feature: Claude subscription provider via CLI shell-out
       | --model                                         | sonnet|
       | (env CLAUDE_CODE_OAUTH_TOKEN is marigold-oauth) |       |
       | (no ANTHROPIC_API_KEY in env)                   |       |
+
+  # --- isaac-jkx7: tool-call syntax drift on the fence path ------------------
+  # The contract is <tool_call>{json}</tool_call>. Models drift: Claude's native
+  # <invoke name="X"><parameter name="k">v</parameter></invoke> (opus, 09-03),
+  # bare {"name":…,"arguments":…} in a markdown code fence (yopp, 09-17), or a
+  # <tool_call> whose JSON does not parse (isaac-work-2, 09-03). A drifted call
+  # must never be treated as a reply: parse what can be parsed, and treat any
+  # unparsed call-shaped block as a protocol violation — one corrective
+  # re-prompt, then :error :tool-protocol. Never a silent verdict.
+
+  @wip
+  Scenario: Claude's native invoke syntax executes the tool exactly like the fence (isaac-jkx7)
+    Given the crew has tools: [exec]
+    And the claude binary is stubbed to return in sequence:
+      | response                                                                                              |
+      | <invoke name="exec__run"><parameter name="command">echo drift</parameter></invoke>                     |
+      | done                                                                                                  |
+    When the user sends "run it" on session "main"
+    Then the exec tool is executed
+    And the claude binary was invoked exactly twice
+    And the second invocation included the tool result serialized in the prompt text
+    And the response is "done"
+
+  @wip
+  Scenario: a bare JSON call in a markdown code fence executes the tool (isaac-jkx7)
+    Given the crew has tools: [exec]
+    And the claude binary is stubbed to return in sequence:
+      | response                                                                          |
+      | ```{"name":"exec__run","arguments":{"command":"echo fenced"}}```                  |
+      | done                                                                              |
+    When the user sends "run it" on session "main"
+    Then the exec tool is executed
+    And the claude binary was invoked exactly twice
+    And the response is "done"
+
+  @wip
+  Scenario: fence then invoke in one reply executes both, in order (isaac-jkx7)
+    Given the crew has tools: [exec]
+    And the claude binary is stubbed to return in sequence:
+      | response                                                                                                                                                    |
+      | <tool_call>{"name":"exec__run","arguments":{"command":"echo one"}}</tool_call> then <invoke name="exec__run"><parameter name="command">echo two</parameter></invoke> |
+      | done                                                                                                                                                        |
+    When the user sends "run both" on session "main"
+    Then the exec tool is executed 2 times
+    And the exec tool ran commands in order:
+      | command  |
+      | echo one |
+      | echo two |
+
+  @wip
+  Scenario: text after a parsed call block is not persisted as assistant content (isaac-jkx7)
+    Given the crew has tools: [exec]
+    And the claude binary is stubbed to return in sequence:
+      | response                                                                                                     |
+      | <tool_call>{"name":"exec__run","arguments":{"command":"git log -1"}}</tool_call>OK / b55d4964 plan: fabricated |
+      | done                                                                                                         |
+    When the user sends "what is the last commit" on session "main"
+    Then the exec tool is executed
+    And session "main" has no transcript entry containing "fabricated"
+
+  @wip
+  Scenario: a malformed fence gets one corrective re-prompt and a well-formed retry executes (isaac-jkx7)
+    Given the crew has tools: [exec]
+    And the claude binary is stubbed to return in sequence:
+      | response                                                                          |
+      | <tool_call>{"name":"exec__run","arguments":{"command":"echo "unescaped" }}</tool_call> |
+      | <tool_call>{"name":"exec__run","arguments":{"command":"echo fixed"}}</tool_call>   |
+      | done                                                                              |
+    When the user sends "run it" on session "main"
+    Then the claude binary was invoked exactly 3 times
+    And the second invocation's prompt text contains "could not be parsed"
+    And the second invocation's prompt text contains "<tool_call>"
+    And the exec tool is executed
+    And the response is "done"
+    And the log has entries matching:
+      | level | event                        |
+      | :warn | :claude-cli/tool-syntax-drift |
+
+  @wip
+  Scenario: a call-shaped block that still does not parse after the re-prompt ends the turn with a tool-protocol error, not a verdict (isaac-jkx7)
+    Given the crew has tools: [exec]
+    And the claude binary is stubbed to return in sequence:
+      | response                                                                          |
+      | <invoke name="exec__run"><parameter name="command">echo one</invoke>              |
+      | <invoke name="exec__run"><parameter name="command">echo one</invoke>              |
+    When the user sends "run it" on session "main"
+    Then the claude binary was invoked exactly twice
+    And the turn ends with error :tool-protocol
+    And session "main" has no transcript entry with role "assistant" containing "<invoke"
+    And the log has entries matching:
+      | level  | event                        | attempt |
+      | :warn  | :claude-cli/tool-syntax-drift | 1       |
+      | :error | :claude-cli/tool-protocol     | 2       |
+
+  @wip
+  Scenario: a tool-protocol error is weather to hail — no delivery attempt is burned (isaac-jkx7)
+    The provider contract failing is not the bean's fault; the delivery
+    defers (hails-never-die) instead of counting toward dead-letter.
+    Given the crew has tools: [exec]
+    And the claude binary is stubbed to return in sequence:
+      | response                                                             |
+      | <invoke name="exec__run"><parameter name="command">echo one</invoke> |
+      | <invoke name="exec__run"><parameter name="command">echo one</invoke> |
+    And a hail delivery is bound to session "main"
+    When the hail delivery runs its turn
+    Then the delivery is deferred with attempts 0
+    And the log has entries matching:
+      | event          | error          |
+      | :hail/deferred | :tool-protocol |
