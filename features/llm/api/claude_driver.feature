@@ -281,8 +281,8 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
   Scenario: the turn's nonce reaches Claude Code only through its environment, never the server's port or token (isaac-ejj3)
     Given the isaac EDN file "config/isaac.edn" exists with:
       | path              | value          |
-      | server.port       | 7912           |
-      | server.auth.token | harbor-secret  |
+      | http.port       | 7912           |
+      | http.auth.token | harbor-secret  |
     And a fake Claude Code on the path scripted with:
       | cycle | kind     | payload                                            |
       | 1     | tool_use | {"name":"exec__run","input":{"command":"echo hi"}} |
