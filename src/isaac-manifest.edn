@@ -1,9 +1,15 @@
 {:id      :isaac.provider.claude-code
- :version "0.1.11"
+ :version "0.1.12"
  :factory isaac.module.protocol/module
 
  :isaac.agent/llm-api
  {:claude-cli {:factory isaac.llm.api.claude-cli/make}}
+
+ :isaac.http/route
+ [{:method  :post
+   :path    "/claude/turns/:id"
+   :handler isaac.llm.mcp-route/handle
+   :scope   :mcp}]
 
  :isaac.agent/provider-template
  {:claude-code {:template {:api                        "claude-cli"
