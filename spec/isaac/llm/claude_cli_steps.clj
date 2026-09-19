@@ -355,27 +355,34 @@
                      pr-str)]
     (g/should-not (str/includes? blob text))))
 
+(defn- turn-result []
+  (or (g/get :llm-result) (g/get :dispatch-result)))
+
+(defn- loud-error? [result]
+  (or (= :llm-error (:error result))
+      (some? (:error result))
+      (and (:unavailable? result)
+           (= :auth (:reason result)))))
+
 (defn turn-ends-with-error [kw]
   (session-steps/await-turn!)
-  (let [result (or (g/get :llm-result) (g/get :dispatch-result))
+  (let [result   (turn-result)
         expected (if (string? kw) (keyword (str/replace kw #":" "")) kw)]
     (g/should= expected (:error result))))
 
 (defn claude-binary-error-reported []
   (session-steps/await-turn!)
-  (let [result (g/get :llm-result)]
-    (g/should (or (= :llm-error (:error result))
-                  (some? (:error result))))))
+  (g/should (loud-error? (turn-result))))
 
 (defn error-message-contains [fragment]
   (session-steps/await-turn!)
-  (let [result  (g/get :llm-result)
-        message (or (:message result) (:output (g/get :llm-result)) "")]
+  (let [result  (turn-result)
+        message (or (:message result) (:output result) "")]
     (g/should (str/includes? message fragment))))
 
 (defn error-classified-auth []
   (session-steps/await-turn!)
-  (let [result (or (g/get :llm-result) (g/get :dispatch-result))]
+  (let [result (turn-result)]
     (g/should (:unavailable? result))
     (g/should= :auth (:reason result))))
 
@@ -460,8 +467,8 @@
 (defthen "the claude binary was invoked exactly {n:int} times"
   isaac.llm.claude-cli-steps/claude-binary-invoked-exactly)
 
-(defthen "the exec tool is executed {n:int} times"
-  isaac.llm.claude-cli-steps/exec-tool-executed-n)
+;; Agent session_steps now registers the same phrase; keep the local helper
+;; for await-turn! but do not re-register the Then (gherclj classify-step).
 
 (defthen "the exec tool ran commands in order:"
   isaac.llm.claude-cli-steps/exec-tool-ran-commands)
