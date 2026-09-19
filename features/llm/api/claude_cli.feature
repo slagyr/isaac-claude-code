@@ -337,7 +337,6 @@ Feature: Claude subscription provider via CLI shell-out
   # unparsed call-shaped block as a protocol violation — one corrective
   # re-prompt, then :error :tool-protocol. Never a silent verdict.
 
-  @wip
   Scenario: Claude's native invoke syntax executes the tool exactly like the fence (isaac-jkx7)
     Given the crew has tools: [exec]
     And the claude binary is stubbed to return in sequence:
@@ -350,7 +349,6 @@ Feature: Claude subscription provider via CLI shell-out
     And the second invocation included the tool result serialized in the prompt text
     And the response is "done"
 
-  @wip
   Scenario: a bare JSON call in a markdown code fence executes the tool (isaac-jkx7)
     Given the crew has tools: [exec]
     And the claude binary is stubbed to return in sequence:
@@ -362,7 +360,6 @@ Feature: Claude subscription provider via CLI shell-out
     And the claude binary was invoked exactly twice
     And the response is "done"
 
-  @wip
   Scenario: fence then invoke in one reply executes both, in order (isaac-jkx7)
     Given the crew has tools: [exec]
     And the claude binary is stubbed to return in sequence:
@@ -376,7 +373,6 @@ Feature: Claude subscription provider via CLI shell-out
       | echo one |
       | echo two |
 
-  @wip
   Scenario: text after a parsed call block is not persisted as assistant content (isaac-jkx7)
     Given the crew has tools: [exec]
     And the claude binary is stubbed to return in sequence:
@@ -387,7 +383,6 @@ Feature: Claude subscription provider via CLI shell-out
     Then the exec tool is executed
     And session "main" has no transcript entry containing "fabricated"
 
-  @wip
   Scenario: a malformed fence gets one corrective re-prompt and a well-formed retry executes (isaac-jkx7)
     Given the crew has tools: [exec]
     And the claude binary is stubbed to return in sequence:
@@ -405,7 +400,6 @@ Feature: Claude subscription provider via CLI shell-out
       | level | event                        |
       | :warn | :claude-cli/tool-syntax-drift |
 
-  @wip
   Scenario: a call-shaped block that still does not parse after the re-prompt ends the turn with a tool-protocol error, not a verdict (isaac-jkx7)
     Given the crew has tools: [exec]
     And the claude binary is stubbed to return in sequence:
@@ -421,7 +415,6 @@ Feature: Claude subscription provider via CLI shell-out
       | :warn  | :claude-cli/tool-syntax-drift | 1       |
       | :error | :claude-cli/tool-protocol     | 2       |
 
-  @wip
   Scenario: a tool-protocol error is weather to hail — no delivery attempt is burned (isaac-jkx7)
     The provider contract failing is not the bean's fault; the delivery
     defers (hails-never-die) instead of counting toward dead-letter.

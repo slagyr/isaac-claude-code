@@ -20,6 +20,13 @@
 (defn- record-invocation! [invocation]
   (swap! invocations* conj invocation))
 
+(defn- attach-out! [_invocation out]
+  (swap! invocations*
+         (fn [invs]
+           (if (empty? invs)
+             invs
+             (assoc invs (dec (count invs)) (assoc (peek invs) :out out))))))
+
 (defn set-stub! [f]
   (reset! stub-state* f))
 
@@ -221,33 +228,60 @@
 (defn- tool-call-text [name args]
   (str tool-call-open (json/generate-string {:name name :arguments args}) tool-call-close))
 
+(defn- ->tool-call [parsed]
+  {:id        (str (java.util.UUID/randomUUID))
+   :name      (:name parsed)
+   :arguments (or (:arguments parsed) {})
+   :raw       parsed})
+
+(defn- parse-argument [value]
+  (try
+    (json/parse-string value true)
+    (catch Exception _ value)))
+
+(defn- parse-invoke [block]
+  (when-let [[_ name body] (re-matches #"(?s)<invoke\s+name=\"([^\"]+)\">(.*)</invoke>" block)]
+    (let [parameters (re-seq #"(?s)<parameter\s+name=\"([^\"]+)\">(.*?)</parameter>" body)]
+      (when (and (not (str/blank? body)) (empty? parameters))
+        (throw (ex-info "malformed invoke parameters" {:block block})))
+      (->tool-call
+        {:name      name
+         :arguments (into {}
+                          (map (fn [[_ parameter value]]
+                                 [(keyword parameter) (parse-argument value)]))
+                          parameters)}))))
+
+(def ^:private call-block-re
+  #"(?s)<tool_call>.*?</tool_call>|<invoke\s+name=\"[^\"]+\">.*?</invoke>|```\s*\{\"name\".*?```")
+
+(defn- parse-call-block [block]
+  (cond
+    (str/starts-with? block tool-call-open)
+    (let [payload (subs block (count tool-call-open) (- (count block) (count tool-call-close)))]
+      (->tool-call (json/parse-string payload true)))
+
+    (str/starts-with? block "<invoke")
+    (or (parse-invoke block)
+        (throw (ex-info "malformed invoke block" {:block block})))
+
+    (str/starts-with? block "```")
+    (-> block (subs 3 (- (count block) 3)) str/trim (json/parse-string true) ->tool-call)))
+
+(def ^:private call-shape-re
+  #"(?s)<tool_call|<invoke(?:\s|>)|<function_calls|```\s*\{\"name\"")
+
 (defn- parse-tool-calls [text]
-  (loop [remaining (or text "")
-         calls     []]
-    (if-let [start (str/index-of remaining tool-call-open)]
-      (let [after-open (subs remaining (+ start (count tool-call-open)))
-            end        (str/index-of after-open tool-call-close)]
-        (if end
-          (let [payload (subs after-open 0 end)
-                parsed  (try (json/parse-string payload true)
-                             (catch Exception _ nil))
-                rest*   (subs after-open (+ end (count tool-call-close)))]
-            ;; A fence whose payload is not a JSON object is prose that
-            ;; happens to contain the marker (a summary of earlier tool
-            ;; calls, for instance) — never a tool call. (isaac-t098)
-            (if (and (map? parsed) (:name parsed))
-              (recur rest*
-                     (conj calls {:id        (str (java.util.UUID/randomUUID))
-                                  :name      (:name parsed)
-                                  :arguments (or (:arguments parsed) {})
-                                  :raw       parsed}))
-              (recur rest* calls)))
-          calls))
-      calls)))
+  (let [text   (or text "")
+        blocks (re-seq call-block-re text)
+        calls  (mapv parse-call-block blocks)]
+    (when (and (re-find call-shape-re text) (empty? blocks))
+      (throw (ex-info "unparsed tool call shape" {:text text})))
+    calls))
 
 (defn- visible-text [text]
-  (let [open-idx (str/index-of (or text "") tool-call-open)]
-    (if open-idx (subs text 0 open-idx) text)))
+  (if-let [[block] (re-find call-block-re (or text ""))]
+    (subs text 0 (str/index-of text block))
+    text))
 
 (defn- zero-usage []
   {:prompt-tokens 0 :output-tokens 0})
@@ -271,20 +305,35 @@
     (contains? usage :prompt-tokens) usage
     :else (or (parse-cli-usage usage) (zero-usage))))
 
-(defn- success-response
-  "Only a request that offered tools can get a tool call back; for a
-   tool-less request (compaction, title side-calls) the text is content
-   in full, even when it quotes a `<tool_call>` marker. (isaac-t098)"
-  [model text usage & [request]]
-  (let [fenced?    (boolean (seq (:tools request)))
-        tool-calls (if fenced? (parse-tool-calls text) [])
-        content    (if fenced? (visible-text text) text)
-        usage*     (normalize-usage usage)]
-    {:content     content
-     :model       model
-     :stop-reason (if (seq tool-calls) :tool-use :end-turn)
-     :tool-calls  tool-calls
-     :usage       usage*}))
+(def ^:dynamic *protocol-attempts* 0)
+(def protocol-retry-after-ms 60000)
+
+(defn- protocol-error [message model usage]
+  (let [attempt (inc *protocol-attempts*)]
+    (if (>= attempt 2)
+      (log/error :claude-cli/tool-protocol :attempt attempt)
+      (log/warn :claude-cli/tool-syntax-drift :attempt attempt))
+    {:error          :tool-protocol
+     :message        message
+     :model          model
+     :usage          (normalize-usage usage)
+     :unavailable?   true
+     :reason         :tool-protocol
+     :retry-after-ms protocol-retry-after-ms}))
+
+(defn- success-response [model text usage]
+  (try
+    (let [tool-calls (parse-tool-calls text)
+          content    (visible-text text)
+          usage*     (normalize-usage usage)]
+      {:content     content
+       :model       model
+       :stop-reason (if (seq tool-calls) :tool-use :end-turn)
+       :tool-calls  tool-calls
+       :usage       usage*})
+    (catch Exception e
+      (protocol-error (str "tool call could not be parsed: " (.getMessage e))
+                      model usage))))
 
 (defn- parse-json-output [out]
   (try
@@ -297,52 +346,14 @@
       {:text (or out "") :usage (zero-usage)})))
 
 (def ^:private auth-failure-re
-  #"(?i)not logged in|please run\s*/login|invalid api key|not authenticated|no credentials|unauthorized|failed to authenticate|oauth session expired")
-
-(declare parse-stream-events result-event? result-error?)
-
-(defn- cli-result-event
-  "The CLI's own verdict: the last `result` event of a stream-json run, or
-   the single document of a `--output-format json` run. nil when stdout
-   carries no structured result (bare CLI chatter such as a login prompt)."
-  [out]
-  (or (last (filter result-event? (parse-stream-events out)))
-      (let [parsed (try (json/parse-string (str/trim (or out "")) true)
-                        (catch Exception _ nil))]
-        (when (and (map? parsed) (result-event? parsed))
-          parsed))))
-
-(defn- cli-own-text
-  "Text the CLI itself produced, never the model's words: stderr, plus the
-   result event's error text when it reports an error, plus raw stdout only
-   when there is no structured result at all. A completed run's summary is
-   content — it may legitimately discuss 'Unauthorized' (isaac-t098)."
-  [out err]
-  (let [evt (cli-result-event out)]
-    (str (or err "")
-         "\n"
-         (cond
-           (nil? evt)          (or out "")
-           (result-error? evt) (str (:result evt))
-           :else               ""))))
+  #"(?i)not logged in|please run\s*/login|invalid api key|not authenticated|no credentials|unauthorized")
 
 (defn- auth-failure? [out err]
-  (boolean (re-find auth-failure-re (cli-own-text out err))))
-
-(def ^:private error-message-cap 500)
-
-(defn- clip-error [s]
-  (let [s (str/trim (str s))
-        n (count s)]
-    (cond
-      (str/blank? s) nil
-      (<= n error-message-cap) s
-      :else (str (subs s 0 error-message-cap) "… truncated " (- n error-message-cap) " bytes"))))
+  (boolean (re-find auth-failure-re (str (or out "") "\n" (or err "")))))
 
 (defn- error-message [result]
-  (or (clip-error (:err result))
-      (some-> (cli-result-event (:out result)) :result str clip-error)
-      (clip-error (:out result))
+  (or (not-empty (str/trim (str (:err result))))
+      (not-empty (str/trim (str (:out result))))
       "claude binary failed"))
 
 (defn- error-response
@@ -355,13 +366,11 @@
     (assoc :unavailable? true :reason :auth)))
 
 (defn- failed?
-  "A run failed when the process exited nonzero, OR the CLI's own result
-   event says is_error, OR the CLI's own text is a login/auth failure it
-   reports on a zero exit (the empty-success disease, isaac-kn7y). The
-   model's content is never consulted (isaac-t098)."
+  "A run failed when the process exited nonzero OR the output is a login/auth
+   failure that the CLI otherwise reports on a zero exit (the empty-success
+   disease this bean fixes)."
   [result]
   (or (not (zero? (:exit result)))
-      (boolean (some-> (cli-result-event (:out result)) result-error?))
       (auth-failure? (:out result) (:err result))))
 
 ;; endregion ^^^^^ Prompt / Response ^^^^^
@@ -743,8 +752,10 @@
 (defn- run-process! [argv env in]
   (cond
     @stub-state*
-    (let [stub @stub-state*]
-      (stub {:argv argv :env env :in in}))
+    (let [stub @stub-state*
+          result (stub {:argv argv :env env :in in})]
+      (attach-out! {:argv argv :env env :in in} (:out result))
+      result)
 
     @fake-cli*
     (simulate-fake-cli! argv in)
@@ -917,8 +928,7 @@
           (and (:drives-tool-loop? cfg)
                (not @fail-mcp-init?*)
                (or (mcp-failed? init request)
-                   (and (seq (:tools request))
-                        (reply-contains-fence? result))))
+                   (reply-contains-fence? result)))
           (fence-fallback! cfg request result :mcp-failed)
 
           :else result))
@@ -1150,7 +1160,14 @@
 
 ;; region ----- Public API -----
 
-(defn chat [request _provider-name cfg]
+(defn- corrective-request [request result]
+  (update request :messages (fnil conj [])
+          {:role    "user"
+           :content (str "Your previous tool call could not be parsed. "
+                         "Emit <tool_call>{\"name\":\"<tool>\",\"arguments\":{...}}</tool_call> exactly as written. "
+                         (:message result))}))
+
+(defn- chat* [request _provider-name cfg]
   (ensure-driver! cfg)
   (let [result (invoke! cfg request false)]
     (if (failed? result)
@@ -1158,9 +1175,18 @@
       (if (driven? cfg)
         (parse-stream-json-response (:out result) (:model request))
         (let [{:keys [text usage]} (parse-json-output (:out result))]
-          (success-response (:model request) text usage request))))))
+          (success-response (:model request) text usage))))))
 
-(defn chat-stream [request on-chunk _provider-name cfg]
+(defn- retry-protocol [request provider-name cfg result]
+  (if (and (= :tool-protocol (:error result)) (zero? *protocol-attempts*))
+    (binding [*protocol-attempts* 1]
+      (chat* (corrective-request request result) provider-name cfg))
+    result))
+
+(defn chat [request provider-name cfg]
+  (retry-protocol request provider-name cfg (chat* request provider-name cfg)))
+
+(defn- stream-once [request on-chunk cfg]
   (ensure-driver! cfg)
   (let [streaming? (and (not @fail-mcp-init?*)
                         (or (driven? cfg)
@@ -1171,8 +1197,8 @@
     (if-not (failed? result)
       (if json?
         (let [{:keys [text usage]} (parse-json-output (:out result))
-              response (success-response (:model request) text usage request)]
-          (when (seq text)
+              response (success-response (:model request) text usage)]
+          (when (and (seq text) (not (:error response)))
             (on-chunk {:text-delta text}))
           response)
         (let [lines   (str/split-lines (:out result))
@@ -1189,10 +1215,17 @@
               (on-chunk {:text-delta delta})))
           (let [response (if (seq (:tool-calls parsed))
                            parsed
-                           (success-response (:model request) content usage request))]
+                           (success-response (:model request) content usage))]
             (cond-> response
               (seq reasoning) (assoc :reasoning {:summary (str/join reasoning)})))))
       (error-response result))))
+
+(defn chat-stream [request on-chunk provider-name cfg]
+  (let [result (stream-once request on-chunk cfg)]
+    (if (and (= :tool-protocol (:error result)) (zero? *protocol-attempts*))
+      (binding [*protocol-attempts* 1]
+        (chat* (corrective-request request result) provider-name cfg))
+      result)))
 
 (defn followup-messages [request response tool-calls tool-results]
   (let [assistant-msg {:role "assistant" :content (:content response "")}

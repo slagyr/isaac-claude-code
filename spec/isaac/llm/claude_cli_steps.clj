@@ -3,12 +3,13 @@
     [cheshire.core :as json]
     [clojure.edn :as edn]
     [clojure.string :as str]
-    [gherclj.core :as g :refer [defgiven defthen helper!]]
+    [gherclj.core :as g :refer [defgiven defwhen defthen helper!]]
     [isaac.fs :as fs]
     [isaac.tool.tools-steps :as tools-steps]
     [isaac.llm.api.claude-cli :as claude-cli]
     [isaac.llm.api.protocol :as api]
     [isaac.llm.providers :as providers]
+    [isaac.logger :as log]
     [isaac.nexus :as nexus]
     [isaac.session.session-steps :as session-steps]
     [isaac.step-tables :as match]))
@@ -225,6 +226,14 @@
 (defn claude-binary-stubbed-stream-with-usage [raw]
   (claude-binary-stubbed-stream raw))
 
+(defn claude-binary-stubbed-sequence [table]
+  (let [responses (atom (mapv first (:rows table)))]
+    (install-stub!
+      (fn [_]
+        (let [response (or (first @responses) "")]
+          (swap! responses #(vec (rest %)))
+          (stub-return response))))))
+
 (defn claude-binary-stubbed-fail [exit message]
   (install-stub! (constantly (stub-fail (parse-long exit) message))))
 
@@ -248,7 +257,7 @@
 
 (defn claude-binary-invoked-exactly [n]
   (session-steps/await-turn!)
-  (g/should= (parse-long n) (count (claude-cli/invocations))))
+  (g/should= (if (string? n) (parse-long n) n) (count (claude-cli/invocations))))
 
 (defn second-invocation-includes-tool-result []
   (session-steps/await-turn!)
@@ -289,11 +298,68 @@
                        vec))]
     (session-steps/crew-tool-allow "thinker" (str/join "," tools))))
 
+(defn- exec-tool-events []
+  (->> (or (some-> (g/get :channel-events) deref) [])
+       (filter #(and (= "tool-call" (:event %))
+                     (contains? #{"exec" "exec__run"} (get-in % [:tool :name]))))))
+
 (defn exec-tool-executed []
   (session-steps/await-turn!)
-  (let [events (->> (or (some-> (g/get :channel-events) deref) [])
-                    (filter #(= "tool-call" (:event %))))]
-    (g/should (some #(= "exec" (get-in % [:tool :name])) events))))
+  (g/should (seq (exec-tool-events))))
+
+(defn exec-tool-executed-n [n]
+  (session-steps/await-turn!)
+  (g/should= (if (string? n) (parse-long n) n) (count (exec-tool-events))))
+
+(defn- commands-from-text [text]
+  (mapv (fn [[_ json-cmd invoke-cmd]] (or json-cmd invoke-cmd))
+        (re-seq #"(?:\"command\":\"([^\"]+)\"|<parameter name=\"command\">([^<]+)</parameter>)" (str text))))
+
+(defn exec-tool-ran-commands [table]
+  (session-steps/await-turn!)
+  (let [expected  (mapv #(or (get (zipmap (:headers table) %) "command")
+                             (first %))
+                        (:rows table))
+        first-out (or (get-in (first (claude-cli/invocations)) [:out]) "")
+        text      (or (try (:result (json/parse-string first-out true))
+                           (catch Exception _ first-out))
+                      first-out)
+        actual    (commands-from-text text)]
+    (g/should= expected actual)))
+
+(defn second-invocation-prompt-contains [text]
+  (session-steps/await-turn!)
+  (let [invocations (claude-cli/invocations)]
+    (g/should (<= 2 (count invocations)))
+    (g/should (str/includes? (str (:in (second invocations))) text))))
+
+(defn session-has-no-transcript-containing [name text]
+  (session-steps/await-turn!)
+  (let [entries (or (try ((requiring-resolve 'isaac.session.store.spi/get-transcript)
+                          ((requiring-resolve 'isaac.session.store.spi/registered-store))
+                          name)
+                         (catch Exception _ nil))
+                    [])
+        blob    (pr-str entries)]
+    (g/should-not (str/includes? blob text))))
+
+(defn session-has-no-transcript-role-containing [name role text]
+  (session-steps/await-turn!)
+  (let [entries (or (try ((requiring-resolve 'isaac.session.store.spi/get-transcript)
+                          ((requiring-resolve 'isaac.session.store.spi/registered-store))
+                          name)
+                         (catch Exception _ nil))
+                    [])
+        blob    (->> entries
+                     (filter #(= role (or (get-in % [:message :role]) (:role %))))
+                     pr-str)]
+    (g/should-not (str/includes? blob text))))
+
+(defn turn-ends-with-error [kw]
+  (session-steps/await-turn!)
+  (let [result (or (g/get :llm-result) (g/get :dispatch-result))
+        expected (if (string? kw) (keyword (str/replace kw #":" "")) kw)]
+    (g/should= expected (:error result))))
 
 (defn claude-binary-error-reported []
   (session-steps/await-turn!)
@@ -364,6 +430,9 @@
 (defgiven "the claude binary is stubbed to first return tool call text for exec, then \"done\""
   isaac.llm.claude-cli-steps/claude-binary-stubbed-tool-then-text)
 
+(defgiven "the claude binary is stubbed to return in sequence:"
+  isaac.llm.claude-cli-steps/claude-binary-stubbed-sequence)
+
 (defgiven #"the claude binary is stubbed to fail with exit code (\d+) and message \"([^\"]+)\""
   isaac.llm.claude-cli-steps/claude-binary-stubbed-fail)
 
@@ -387,6 +456,57 @@
 (defgiven #"the crew has tools: (.+)" isaac.llm.claude-cli-steps/crew-has-tools)
 
 (defthen "the exec tool is executed" isaac.llm.claude-cli-steps/exec-tool-executed)
+
+(defthen "the claude binary was invoked exactly {n:int} times"
+  isaac.llm.claude-cli-steps/claude-binary-invoked-exactly)
+
+(defthen "the exec tool is executed {n:int} times"
+  isaac.llm.claude-cli-steps/exec-tool-executed-n)
+
+(defthen "the exec tool ran commands in order:"
+  isaac.llm.claude-cli-steps/exec-tool-ran-commands)
+
+(defthen "the second invocation's prompt text contains {text:string}"
+  isaac.llm.claude-cli-steps/second-invocation-prompt-contains)
+
+(defthen "session {name:string} has no transcript entry containing {text:string}"
+  isaac.llm.claude-cli-steps/session-has-no-transcript-containing)
+
+(defthen "session {name:string} has no transcript entry with role {role:string} containing {text:string}"
+  isaac.llm.claude-cli-steps/session-has-no-transcript-role-containing)
+
+(defthen "the turn ends with error {kw:string}"
+  isaac.llm.claude-cli-steps/turn-ends-with-error)
+
+(defn hail-delivery-bound-to-session [name]
+  (g/assoc! :hail-delivery {:id "hail-jkx7" :bound-session name :attempts 0}))
+
+(defn hail-delivery-runs-its-turn []
+  (session-steps/user-sends-on-session
+    "run it" (or (:bound-session (g/get :hail-delivery)) "main"))
+  (session-steps/await-turn!)
+  (let [result   (or (g/get :llm-result) (g/get :dispatch-result) {})
+        delivery (or (g/get :hail-delivery) {:attempts 0})]
+    (if (:unavailable? result)
+      (do
+        (log/info :hail/deferred :error (:error result))
+        (g/assoc! :hail-delivery (assoc delivery :deferred? true :attempts (:attempts delivery))))
+      (g/assoc! :hail-delivery (update delivery :attempts (fnil inc 0))))))
+
+(defn delivery-is-deferred-with-attempts [n]
+  (let [delivery (g/get :hail-delivery)
+        n (if (string? n) (parse-long n) n)]
+    (g/should (:deferred? delivery))
+    (g/should= n (:attempts delivery))))
+
+(defgiven "a hail delivery is bound to session {name:string}"
+  isaac.llm.claude-cli-steps/hail-delivery-bound-to-session)
+
+(defwhen "the hail delivery runs its turn"
+  isaac.llm.claude-cli-steps/hail-delivery-runs-its-turn)
+
+(defthen "the delivery is deferred with attempts {n:int}"
+  isaac.llm.claude-cli-steps/delivery-is-deferred-with-attempts)
 
 (defthen "an error is reported indicating the claude binary failed"
   isaac.llm.claude-cli-steps/claude-binary-error-reported)

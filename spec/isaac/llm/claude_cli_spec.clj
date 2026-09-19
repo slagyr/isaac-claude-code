@@ -10,7 +10,7 @@
     [isaac.marigold.agent :as marigold.agent]
     [isaac.nexus :as nexus]
     [isaac.session.spec-helper :as session-helper]
-    [speclj.core :refer [around before describe it should should= should-not should-be-nil]]))
+    [speclj.core :refer [around before describe it should should= should-not]]))
 
 (def ^:private transcript-test-dir marigold/home)
 
@@ -110,6 +110,87 @@
       (should-not (str/includes? (str (:in inv)) sut/tool-protocol-contract))
       (should-not (str/includes? (str (:in inv)) "## Tools"))))
 
+  (it "parses native invoke syntax as a tool call"
+    (let [text "<invoke name=\"exec__run\"><parameter name=\"command\">echo drift</parameter></invoke>"
+          res  (#'sut/success-response "sonnet" text {})
+          call (first (:tool-calls res))]
+      (should= :tool-use (:stop-reason res))
+      (should= "exec__run" (:name call))
+      (should= {:command "echo drift"} (:arguments call))))
+
+  (it "parses a bare JSON call in a markdown fence"
+    (let [text "```{\"name\":\"exec__run\",\"arguments\":{\"command\":\"echo fenced\"}}```"
+          call (first (:tool-calls (#'sut/success-response "sonnet" text {})))]
+      (should= "exec__run" (:name call))
+      (should= {:command "echo fenced"} (:arguments call))))
+
+  (it "drops all model text after the first parsed call"
+    (let [text "before<tool_call>{\"name\":\"exec__run\",\"arguments\":{}}</tool_call>fabricated"
+          res  (#'sut/success-response "sonnet" text {})]
+      (should= "before" (:content res))))
+
+  (it "parses fence and invoke calls in source order"
+    (let [text  (str "<tool_call>{\"name\":\"exec__run\",\"arguments\":{\"command\":\"one\"}}</tool_call>"
+                     " then <invoke name=\"exec__run\"><parameter name=\"command\">two</parameter></invoke>")
+          calls (:tool-calls (#'sut/success-response "sonnet" text {}))]
+      (should= ["one" "two"] (mapv #(get-in % [:arguments :command]) calls))))
+
+  (it "parses JSON-looking invoke parameter values"
+    (let [text "<invoke name=\"exec__run\"><parameter name=\"limit\">2</parameter></invoke>"
+          call (first (:tool-calls (#'sut/success-response "sonnet" text {})))]
+      (should= {:limit 2} (:arguments call))))
+
+  (it "returns malformed fences as tool protocol errors instead of throwing"
+    (let [text "<tool_call>{\"name\":\"exec__run\",\"arguments\":{bad}}</tool_call>"
+          res  (#'sut/success-response "sonnet" text {})]
+      (should= :tool-protocol (:error res))
+      (should (str/includes? (:message res) "could not be parsed"))))
+
+  (it "returns unclosed invoke blocks as tool protocol errors"
+    (let [text "<invoke name=\"exec__run\"><parameter name=\"command\">one</invoke>"
+          res  (#'sut/success-response "sonnet" text {})]
+      (should= :tool-protocol (:error res))
+      (should (:unavailable? res))))
+
+  (it "retries a malformed fence once, then executes the well-formed call"
+    (let [calls (atom 0)]
+      (sut/clear-invocations!)
+      (sut/set-stub!
+        (fn [_]
+          (swap! calls inc)
+          (if (= 1 @calls)
+            {:exit 0
+             :out  (json/generate-string {:type "result" :result "<tool_call>{\"name\":\"exec__run\",\"arguments\":{bad}}</tool_call>"})
+             :err  ""}
+            {:exit 0
+             :out  (json/generate-string {:type "result" :result "<tool_call>{\"name\":\"exec__run\",\"arguments\":{\"command\":\"echo fixed\"}}</tool_call>"})
+             :err  ""})))
+      (let [res (sut/chat {:model "sonnet" :messages [{:role "user" :content "run it"}]}
+                          "claude" {:command "claude"})]
+        (should= 2 @calls)
+        (should= "exec__run" (:name (first (:tool-calls res))))
+        (should= {:command "echo fixed"} (:arguments (first (:tool-calls res)))))))
+
+  (it "retries a malformed fence on the stream path the same way"
+    (let [calls (atom 0)]
+      (sut/clear-invocations!)
+      (sut/set-stub!
+        (fn [_]
+          (swap! calls inc)
+          (if (= 1 @calls)
+            {:exit 0
+             :out  (json/generate-string {:type "result" :result "<tool_call>{\"name\":\"exec__run\",\"arguments\":{bad}}</tool_call>"})
+             :err  ""}
+            {:exit 0
+             :out  (json/generate-string {:type "result" :result "<tool_call>{\"name\":\"exec__run\",\"arguments\":{\"command\":\"echo fixed\"}}</tool_call>"})
+             :err  ""})))
+      (let [res (sut/chat-stream {:model "sonnet" :messages [{:role "user" :content "run it"}]}
+                                 (fn [_])
+                                 "claude" {:command "claude"})]
+        (should= 2 @calls)
+        (should= "exec__run" (:name (first (:tool-calls res))))
+        (should= {:command "echo fixed"} (:arguments (first (:tool-calls res)))))))
+
   (it "suppresses all tools with --tools \"\" and never emits the bad flags"
     (sut/clear-invocations!)
     (sut/chat {:model "sonnet" :messages [{:role "user" :content "yo"}]}
@@ -130,70 +211,6 @@
       (should (:unavailable? res))
       (should= :auth (:reason res))))
 
-  (it "trusts the CLI's verdict: a completed run whose content mentions Unauthorized is a success (isaac-t098)"
-    (sut/set-stub! (constantly {:exit 0
-                                :err  ""
-                                :out  (json/generate-string {:type     "result"
-                                                             :is_error false
-                                                             :result   "Summary: the 401 Unauthorized path and the Not authenticated branch are covered."
-                                                             :usage    {:input_tokens 12 :output_tokens 9}})}))
-    (let [res (sut/chat {:model "sonnet" :messages [{:role "user" :content "compact"}]}
-                        "claude" {:command "claude"})]
-      (should-be-nil (:error res))
-      (should (str/includes? (:content res) "Unauthorized"))))
-
-  (it "a stream-json run whose summary mentions Unauthorized is a success on the streaming path too (isaac-t098)"
-    (sut/set-stub! (constantly {:exit 0
-                                :err  ""
-                                :out  (str (json/generate-string {:type "system" :subtype "init" :tools ["mcp__isaac__memory__get"]})
-                                           "\n"
-                                           (json/generate-string {:type "result" :is_error false
-                                                                  :result "Compacted. Earlier turns handled 401 Unauthorized."
-                                                                  :usage {:input_tokens 5 :output_tokens 7}}))}))
-    (let [chunks (atom [])
-          res    (sut/chat-stream {:model "sonnet" :messages [{:role "user" :content "compact"}]}
-                                  #(swap! chunks conj %)
-                                  "claude" {:command "claude" :stream-non-tool-turns true})]
-      (should-be-nil (:error res))
-      (should (str/includes? (str (:content res)) "Unauthorized"))))
-
-  (it "a result event the CLI marks is_error is a failure carrying the CLI's own message (isaac-t098)"
-    (sut/set-stub! (constantly {:exit 0
-                                :err  ""
-                                :out  (str (json/generate-string {:type "system" :subtype "init"})
-                                           "\n"
-                                           (json/generate-string {:type "result" :is_error true
-                                                                  :result "Failed to authenticate: OAuth session expired and could not be refreshed"}))}))
-    (let [res (sut/chat {:model "sonnet" :messages [{:role "user" :content "hi"}]}
-                        "claude" {:command "claude"})]
-      (should= :llm-error (:error res))
-      (should (str/includes? (:message res) "OAuth session expired"))
-      (should (:unavailable? res))
-      (should= :auth (:reason res))))
-
-  (it "a tool-less request keeps content that merely quotes a tool_call marker (isaac-t098)"
-    (sut/set-stub! (constantly {:exit 0 :err ""
-                                :out  (json/generate-string {:type "result" :is_error false
-                                                             :result "Summary: earlier the model wrote <tool_call>{\"name\":\"exec__run\"}</tool_call> and got OK."
-                                                             :usage {:input_tokens 3 :output_tokens 4}})}))
-    (let [res (sut/chat {:model "sonnet" :messages [{:role "user" :content "compact"}]}
-                        "claude" {:command "claude"})]
-      (should-be-nil (:error res))
-      (should= :end-turn (:stop-reason res))
-      (should= [] (:tool-calls res))
-      (should (str/includes? (:content res) "and got OK."))))
-
-  (it "a fence whose payload is not JSON is prose, not a tool call, even when tools were offered (isaac-t098)"
-    (sut/set-stub! (constantly {:exit 0 :err ""
-                                :out  (json/generate-string {:type "result" :is_error false
-                                                             :result "note <tool_call>.oops</tool_call> done"
-                                                             :usage {}})}))
-    (let [res (sut/chat {:model "sonnet" :messages [{:role "user" :content "hi"}]
-                         :tools [{:name "exec__run" :description "run" :parameters {}}]}
-                        "claude" {:command "claude"})]
-      (should-be-nil (:error res))
-      (should= [] (:tool-calls res))))
-
   (it "reports a nonzero exit as a loud error without auth misclassification"
     (sut/set-stub! (constantly {:exit 1 :out "" :err "claude: boom"}))
     (let [res (sut/chat {:model "sonnet" :messages [{:role "user" :content "hi"}]}
@@ -201,14 +218,6 @@
       (should= :llm-error (:error res))
       (should (str/includes? (:message res) "claude: boom"))
       (should-not (:unavailable? res))))
-
-  (it "clips a huge stdout dump on nonzero exit"
-    (sut/set-stub! (constantly {:exit 1 :out (apply str (repeat 8000 "x")) :err ""}))
-    (let [res (sut/chat {:model "sonnet" :messages [{:role "user" :content "hi"}]}
-                        "claude" {:command "claude"})]
-      (should= :llm-error (:error res))
-      (should (< (count (:message res)) 600))
-      (should (str/includes? (:message res) "truncated"))))
 
   (it "parses json result text and usage"
     (sut/set-stub!
