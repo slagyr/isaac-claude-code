@@ -425,7 +425,7 @@
 
 (defn- subprocess-env
   ([]
-   (dissoc (into {} (System/getenv)) "ANTHROPIC_API_KEY"))
+   (dissoc (into {} (.environment (ProcessBuilder. []))) "ANTHROPIC_API_KEY"))
   ([nonce]
    (assoc (subprocess-env) "ISAAC_MCP_NONCE" nonce)))
 

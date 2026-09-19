@@ -4,7 +4,9 @@
     [babashka.http-client :as http]
     [cheshire.core :as json]
     [clojure.string :as str]
-    [clojure.tools.cli :as tools-cli]))
+    [clojure.tools.cli :as tools-cli]
+    [isaac.cli.api :as cli-api]
+    [isaac.cli.host :as host]))
 
 (def PROTOCOL_VERSION "2025-06-18")
 
@@ -48,25 +50,46 @@
 (defn- handle-line! [opts line]
   (let [message (parse-line line)]
     (cond
-      (:error message)                  (write-line! (json/generate-string message))
+      (:error message)                   (write-line! (json/generate-string message))
       (= "initialize" (:method message)) (write-line! (json/generate-string (initialize (:id message))))
-      (notification? message)           nil
-      :else                             (write-line! (relay opts line message)))))
+      (notification? message)            nil
+      :else                              (write-line! (relay opts line message)))))
+
+(defn- print-err! [msg]
+  (binding [*out* *err*]
+    (println msg)))
+
+(defn- line-reader [in]
+  (if (instance? java.io.BufferedReader in)
+    in
+    (java.io.BufferedReader. in)))
 
 (defn run [opts]
-  (let [reader (java.io.BufferedReader. *in*)]
+  (let [reader (line-reader (host/in))]
     (loop []
       (when-let [line (.readLine reader)]
         (handle-line! opts line)
         (recur))))
   0)
 
-(defn -main [& args]
+(defn- run-with-args [args]
   (let [{:keys [options errors]} (tools-cli/parse-opts args option-spec)
-        nonce (System/getenv "ISAAC_MCP_NONCE")]
+        nonce (host/env "ISAAC_MCP_NONCE")]
     (cond
-      (seq errors)              (do (binding [*out* *err*] (println (str/join "; " errors))) 1)
-      (str/blank? (:turn options)) (do (binding [*out* *err*] (println "mcp-bridge: --turn is required")) 1)
-      (str/blank? (:url options))  (do (binding [*out* *err*] (println "mcp-bridge: --url is required")) 1)
-      (str/blank? nonce)           (do (binding [*out* *err*] (println "mcp-bridge: ISAAC_MCP_NONCE is required")) 1)
-      :else                     (run (assoc options :nonce nonce)))))
+      (seq errors)                 (do (print-err! (str/join "; " errors)) 1)
+      (str/blank? (:turn options)) (do (print-err! "mcp-bridge: --turn is required") 1)
+      (str/blank? (:url options))  (do (print-err! "mcp-bridge: --url is required") 1)
+      (str/blank? nonce)           (do (print-err! "mcp-bridge: ISAAC_MCP_NONCE is required") 1)
+      :else                        (run (assoc options :nonce nonce)))))
+
+(defn run-fn [{:keys [_raw-args]}]
+  (run-with-args (or _raw-args [])))
+
+(defn -main [& args]
+  (run-with-args args))
+
+(defmethod cli-api/run :mcp-bridge [_id opts]
+  (run-fn opts))
+
+(defmethod cli-api/option-spec :mcp-bridge [_id]
+  option-spec)
