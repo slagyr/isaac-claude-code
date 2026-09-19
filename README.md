@@ -1,5 +1,7 @@
 # 🤖 Isaac Claude Code
 
+<img align="left" width="200" src="https://raw.githubusercontent.com/slagyr/isaac-claude-code/main/isaac-claude-code.png" alt="isaac-claude-code" style="margin-right: 20px; margin-bottom: 10px;">
+
 Claude CLI provider module for Isaac.
 
 This module contributes:
@@ -12,6 +14,8 @@ The runtime behavior is the extracted `claude-cli` provider previously shipped i
 
 The built-in `:claude` provider template and the related provider schema keys
 remain in `isaac-agent` for the pure-move train.
+
+<br clear="left">
 
 ## Development
 
