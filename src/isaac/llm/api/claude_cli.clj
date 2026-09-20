@@ -52,6 +52,7 @@
 (defonce ^:private last-mcp-config* (atom nil))
 (defonce ^:private drive-tool-fn* (atom nil))
 (defonce ^:private on-driven-tool-cycle* (atom nil))
+(defonce ^:private tools-in-result-only?* (atom false))
 
 (def ^:private remembered-keys
   [:drives-tool-loop? :command :extra-args :extraArgs
@@ -93,7 +94,15 @@
   (reset! last-cfg* {})
   (reset! last-mcp-config* nil)
   (reset! drive-tool-fn* nil)
-  (reset! on-driven-tool-cycle* nil))
+  (reset! on-driven-tool-cycle* nil)
+  (reset! tools-in-result-only?* false))
+
+(defn report-tools-in-result-only!
+  "Make the fake CLI withhold its live per-tool-call cycle hook, as the real
+   CLI does — production has no simulator, so the driver always takes the
+   replay path there (isaac-8cur)."
+  []
+  (reset! tools-in-result-only?* true))
 
 (defn fail-mcp-init! []
   (reset! fail-mcp-init?* true)
@@ -661,7 +670,7 @@
                                                      (mapcat event-tool-uses body*))
               aside                            (some #(when (= "text" (:kind %)) (:payload %)) rows)
               hook                             @on-driven-tool-cycle*]
-          (when (and hook (seq tcs))
+          (when (and hook (seq tcs) (not @tools-in-result-only?*))
             (hook :before aside tcs))
           (doseq [evt body*
                   b   (event-tool-uses evt)]
@@ -669,7 +678,7 @@
               (try
                 (f (isaac-tool-name (:name b)) (or (:input b) (:arguments b) {}))
                 (catch Exception _))))
-          (when (and hook (seq tcs))
+          (when (and hook (seq tcs) (not @tools-in-result-only?*))
             (hook :after aside tcs))
           (let [tail (when (or last? @terminated?*)
                        [(if last? result-event {:type "result" :result "" :usage (or usage {})})])
@@ -1153,10 +1162,16 @@
                    :usage        turn-usage
                    :cancelled?   true})
                 (let [asides (vec (or (:asides response) []))]
+                  ;; Replayed tool cycles never met the model: the usage on `response`
+                  ;; belongs to the turn's last cycle, not to each replayed one. Carry
+                  ;; zero usage here, as the live `:before` path does, so only the final
+                  ;; cycle stamps the session's prompt size (isaac-8cur).
                   (when-not @live-tool-cycles?*
                     (doseq [[i tc] (map-indexed vector tool-calls)]
                       (fire-on-cycle! on-cycle :end @cycle-n*
-                                      (cycle-response response [tc] (get asides i)))
+                                      (cycle-response (assoc response :usage (zero-usage))
+                                                      [tc]
+                                                      (get asides i)))
                       (fire-start!)))
                   (let [final (cycle-response response [] nil)]
                     (fire-on-cycle! on-cycle :end @cycle-n* final)
