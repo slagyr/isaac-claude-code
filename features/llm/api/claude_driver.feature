@@ -457,3 +457,31 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
     And the following sessions match:
       | name | last-input-tokens | turn-input-tokens |
       | main | 320               | 580               |
+
+  Scenario: replayed tool cycles do not each stamp the turn's prompt size (isaac-8cur)
+    A CLI that reports its tool calls only in the final result leaves the driver
+    to replay them as cycles after the fact. Those cycles never met the model, so
+    the usage on the result belongs to the last cycle alone. Field run
+    2026-09-20 20:15:39Z (isaac-verify, opus): 27 tool calls produced 27
+    identical `:session/stamp-implausible :prompt-tokens 802832` warnings inside
+    153ms, each one re-reading the whole transcript. Only the final cycle
+    stamps, so the count stays fixed (one from that cycle, one from the
+    message-stored path) instead of growing with the number of tool calls.
+    Given the isaac EDN file "config/models/sub-sonnet.edn" exists with:
+      | path           | value       |
+      | model          | sonnet      |
+      | provider       | claude-code |
+      | context-window | 200000      |
+    And a fake Claude Code on the path scripted with:
+      | cycle | kind     | payload                                                                            |
+      | 1     | tool_use | {"name":"exec__run","input":{"command":"echo one"}}                                |
+      | 1     | tool_use | {"name":"exec__run","input":{"command":"echo two"}}                                |
+      | 1     | text     | both done                                                                          |
+      | 1     | usage    | {"input_tokens":802832,"cache_read_input_tokens":0,"cache_creation_input_tokens":0} |
+    And the fake Claude Code reports tool calls only in its final result
+    When the user sends "twice" on session "main"
+    Then the response is "both done"
+    And the following sessions match:
+      | name | last-input-tokens |
+      | main | 200000            |
+    And the log has 2 entries with event ":session/stamp-implausible"

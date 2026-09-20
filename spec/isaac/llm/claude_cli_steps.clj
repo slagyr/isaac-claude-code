@@ -549,6 +549,17 @@
   (claude-cli/clear-stub!)
   (claude-cli/set-fake-cli! (parse-script-table table)))
 
+(defn log-has-n-entries-with-event [n event]
+  (let [want (-> (str event)
+                 (str/replace #"^\"|\"$" "")
+                 (str/replace #"^:" "")
+                 keyword)
+        cnt  (count (filter #(= want (:event %)) (log/get-entries)))]
+    (g/should= (if (string? n) (parse-long n) n) cnt)))
+
+(defn fake-claude-code-reports-tools-in-result-only []
+  (claude-cli/report-tools-in-result-only!))
+
 (defn fake-claude-code-fails-mcp-init []
   (claude-cli/fail-mcp-init!))
 
@@ -619,6 +630,10 @@
     (g/should= expected actual)))
 
 (defgiven "a fake Claude Code on the path scripted with:" isaac.llm.claude-cli-steps/fake-claude-code-scripted)
+(defthen "the log has {int} entries with event {string}" isaac.llm.claude-cli-steps/log-has-n-entries-with-event
+  "Counts log entries by :event — the repetition itself is the defect (isaac-8cur).")
+
+(defgiven "the fake Claude Code reports tool calls only in its final result" isaac.llm.claude-cli-steps/fake-claude-code-reports-tools-in-result-only)
 (defgiven "the fake Claude Code fails MCP initialization" isaac.llm.claude-cli-steps/fake-claude-code-fails-mcp-init)
 (defgiven "the fake Claude Code exits {code:int} before streaming with stderr {text:string}"
   isaac.llm.claude-cli-steps/fake-claude-code-exits-before-streaming)
