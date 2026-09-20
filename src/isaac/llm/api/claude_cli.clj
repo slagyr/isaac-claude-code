@@ -859,9 +859,20 @@
               :stderr (not-empty (stderr-head (:err result)))
               :events (event-type-counts events))))
 
+(defn- driving? [cfg]
+  ;; Once the fence fallback trips, the CLI runs with no MCP tools and writes
+  ;; its tool calls as text for Isaac to parse. Isaac's own loop has to execute
+  ;; them, so the provider must stop claiming the loop (isaac-zz6d).
+  (boolean (and (:drives-tool-loop? cfg) (not @fail-mcp-init?*))))
+
+(defn- effective-cfg [cfg]
+  (cond-> cfg
+    (contains? cfg :drives-tool-loop?) (assoc :drives-tool-loop? (driving? cfg))))
+
 (defn- ensure-driver! [cfg]
-  (when (:drives-tool-loop? cfg)
-    (tool-loop/install-provider-driver! claude-loop-driver)))
+  (if (driving? cfg)
+    (tool-loop/install-provider-driver! claude-loop-driver)
+    (tool-loop/clear-provider-driver!)))
 
 (defn- fence-retry! [cfg request]
   (let [argv   (build-argv cfg request false nil)
@@ -1247,7 +1258,7 @@
     ;; Grover's feature fixture clears the global driver atom after make.
     ;; Reinstall at the moment tool-loop/run asks whether we own the loop.
     (ensure-driver! cfg)
-    cfg)
+    (effective-cfg cfg))
   (display-name [_] provider-name)
   (format-tools [_ tools] (when (seq tools) (mapv api/wrapped-function-tool tools)))
   (build-prompt [_ opts] (prompt/build opts)))

@@ -208,6 +208,22 @@
           (should (<= 0 (.indexOf argv "--print")))
           (should= "json" (nth argv (inc (.indexOf argv "--output-format"))))))))
 
+  (it "stops claiming the tool loop once it has fallen back to the fence path (isaac-zz6d)"
+    ;; In fence mode the CLI runs with no MCP tools, so Isaac must execute the
+    ;; tool calls the model writes as text. tool-loop/run asks the Api whether
+    ;; the provider drives the loop; answering yes here hands the loop to a
+    ;; driver that assumes the CLI already ran the tools, so the parsed calls
+    ;; are dropped and the turn dies as :empty-terminal-response.
+    (sut/set-stub!
+      (constantly {:exit 0
+                   :out  (json/generate-string {:type "result" :result "fenced"})
+                   :err  ""}))
+    (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})]
+      (should= true (:drives-tool-loop? (api/config api)))
+      (sut/fail-mcp-init!)
+      (api/chat api {:model "sonnet" :messages [{:role "user" :content "fallback"}]})
+      (should= false (:drives-tool-loop? (api/config api)))))
+
   (it "falls back to fence json even when the caller requested a stream"
     (sut/set-stub!
       (constantly {:exit 0
