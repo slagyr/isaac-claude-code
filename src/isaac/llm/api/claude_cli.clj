@@ -1058,7 +1058,7 @@
                :tool-calls   tcs
                :usage        @usage
                :cycle-usages @cycle-usages}
-        (seq think) (assoc :reasoning {:summary think})
+        (not (str/blank? think)) (assoc :reasoning {:summary think})
         (seq @asides) (assoc :asides @asides)))))
 
 ;; endregion ^^^^^ CLI Invocation ^^^^^
@@ -1215,9 +1215,11 @@
               (on-chunk {:text-delta delta})))
           (let [response (if (seq (:tool-calls parsed))
                            parsed
-                           (success-response (:model request) content usage))]
-            (cond-> response
-              (seq reasoning) (assoc :reasoning {:summary (str/join reasoning)})))))
+                           (success-response (:model request) content usage))
+                think    (str/join reasoning)]
+            (if (str/blank? think)
+              (dissoc response :reasoning)
+              (assoc response :reasoning {:summary think})))))
       (error-response result))))
 
 (defn chat-stream [request on-chunk provider-name cfg]

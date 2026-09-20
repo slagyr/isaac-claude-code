@@ -98,6 +98,19 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | user | user         | #"(?s).*think then answer.*here is my answer.*" |
       | user | user         | and again                         |
 
+  Scenario: thinking deltas with no text leave no reasoning block and the turn stays clean (isaac-ddls)
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind     | payload           |
+      | 1     | thinking |                   |
+      | 1     | text     | here is my answer |
+    When the user sends "think then answer" on session "main"
+    Then session "main" has transcript matching:
+      | type    | message.role | message.content   |
+      | message | assistant    | here is my answer |
+    And the log has no entries matching:
+      | event                            |
+      | :chat/provider-contract-violated |
+
   Scenario: cancel mid-loop terminates the process and the turn ends cancelled
     Given a fake Claude Code on the path scripted with:
       | cycle | kind     | payload                                             |

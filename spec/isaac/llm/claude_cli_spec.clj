@@ -50,6 +50,50 @@
                        {:command "claude" :stream-non-tool-turns true})
       (should= ["Hello" " " "world"] @chunks)))
 
+  (it "omits the reasoning block when every streamed thinking delta is blank (isaac-ddls)"
+    (let [out (str/join "\n"
+                        (concat
+                          (map #(json/generate-string
+                                  {:type "content_block_delta" :delta {:type "thinking_delta" :thinking %}})
+                               ["" "\n" "   "])
+                          [(json/generate-string
+                             {:type "content_block_delta" :delta {:type "text_delta" :text "answered"}})]))
+          _   (sut/set-stub! (constantly {:exit 0 :out out :err ""}))
+          res (sut/chat-stream {:model "sonnet" :messages [{:role "user" :content "hi"}]}
+                               (fn [_chunk])
+                               "claude"
+                               {:command "claude" :stream-non-tool-turns true})]
+      (should= "answered" (:content res))
+      (should= nil (:reasoning res))))
+
+  (it "keeps the reasoning block when a streamed thinking delta carries text (isaac-ddls)"
+    (let [out (str/join "\n"
+                        (concat
+                          (map #(json/generate-string
+                                  {:type "content_block_delta" :delta {:type "thinking_delta" :thinking %}})
+                               ["weigh" "ing it"])
+                          [(json/generate-string
+                             {:type "content_block_delta" :delta {:type "text_delta" :text "answered"}})]))
+          _   (sut/set-stub! (constantly {:exit 0 :out out :err ""}))
+          res (sut/chat-stream {:model "sonnet" :messages [{:role "user" :content "hi"}]}
+                               (fn [_chunk])
+                               "claude"
+                               {:command "claude" :stream-non-tool-turns true})]
+      (should= {:summary "weighing it"} (:reasoning res))))
+
+  (it "omits the reasoning block on the driven path when the thinking is whitespace (isaac-ddls)"
+    (let [out (str/join "\n"
+                        [(json/generate-string
+                           {:type "content_block_delta" :delta {:type "thinking_delta" :thinking "\n"}})
+                         (json/generate-string
+                           {:type "content_block_delta" :delta {:type "thinking_delta" :thinking "  "}})
+                         (json/generate-string {:type "result" :result "answered"})])
+          _   (sut/set-stub! (constantly {:exit 0 :out out :err ""}))
+          res (sut/chat {:model "sonnet" :messages [{:role "user" :content "hi"}]}
+                        "claude" {:command "claude" :drives-tool-loop? true})]
+      (should= "answered" (:content res))
+      (should= nil (:reasoning res))))
+
   (it "streams deltas through stream-response"
     (let [out (str/join "\n"
                         (map #(json/generate-string
