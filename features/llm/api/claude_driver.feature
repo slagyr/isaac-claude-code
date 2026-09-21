@@ -485,3 +485,61 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | name | last-input-tokens |
       | main | 200000            |
     And the log has 2 entries with event ":session/stamp-implausible"
+
+  Scenario: two claude-code providers spawn the CLI with their own environments (isaac-12fo)
+    Micah holds several Claude Code subscriptions. `CLAUDE_CONFIG_DIR` isolates
+    the CLI's login, not merely its settings, so a provider that carries its own
+    environment drives its own subscription. Neither provider's value may reach
+    the other, and `ANTHROPIC_API_KEY` stays stripped even when a provider's
+    `:env` supplies it.
+    Given the isaac EDN file "config/providers/claude-a.edn" exists with:
+      | path                  | value             |
+      | type                  | claude-code       |
+      | command               | claude            |
+      | drives-tool-loop?     | true              |
+      | env.CLAUDE_CONFIG_DIR | /tmp/cc-a         |
+      | env.ANTHROPIC_API_KEY | sk-should-be-gone |
+    And the isaac EDN file "config/providers/claude-b.edn" exists with:
+      | path                  | value       |
+      | type                  | claude-code |
+      | command               | claude      |
+      | drives-tool-loop?     | true        |
+      | env                   | {"CLAUDE_CONFIG_DIR" "/tmp/cc-b"} |
+    And the isaac EDN file "config/models/sonnet-a.edn" exists with:
+      | path     | value    |
+      | model    | sonnet   |
+      | provider | claude-a |
+    And the isaac EDN file "config/models/sonnet-b.edn" exists with:
+      | path     | value    |
+      | model    | sonnet   |
+      | provider | claude-b |
+    And the isaac EDN file "config/crew/hand-a.edn" exists with:
+      | path  | value       |
+      | model | sonnet-a    |
+      | soul  | Think hard. |
+    And the isaac EDN file "config/crew/hand-b.edn" exists with:
+      | path  | value       |
+      | model | sonnet-b    |
+      | soul  | Think hard. |
+    And the following sessions exist:
+      | name    | crew   |
+      | alpha   | hand-a |
+      | beta    | hand-b |
+    And a fake Claude Code on the path scripted with:
+      | cycle | kind | payload      |
+      | 1     | text | from alpha   |
+    When the user sends "who are you" on session "alpha"
+    Then the response is "from alpha"
+    And the fake Claude Code was invoked with:
+      | arg                                | value |
+      | (env CLAUDE_CONFIG_DIR=/tmp/cc-a)  |       |
+      | (no ANTHROPIC_API_KEY in env)      |       |
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind | payload    |
+      | 1     | text | from beta  |
+    When the user sends "who are you" on session "beta"
+    Then the response is "from beta"
+    And the fake Claude Code was invoked with:
+      | arg                                | value |
+      | (env CLAUDE_CONFIG_DIR=/tmp/cc-b)  |       |
+

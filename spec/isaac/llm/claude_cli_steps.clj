@@ -116,6 +116,16 @@
           (when (str/blank? (get env "ISAAC_MCP_NONCE"))
             (swap! failures conj "ISAAC_MCP_NONCE missing from subprocess env"))
 
+          (re-matches #"\(env [^=]+=.*\)" arg)
+          (let [[_ k v] (re-matches #"\(env ([^=]+)=(.*)\)" arg)]
+            (when-not (= v (get env k))
+              (swap! failures conj (str "expected env " k "=" v " got " (pr-str (get env k))))))
+
+          (re-matches #"\(no [^ ]+ in env\)" arg)
+          (let [[_ k] (re-matches #"\(no ([^ ]+) in env\)" arg)]
+            (when (contains? env k)
+              (swap! failures conj (str k " present in subprocess env"))))
+
           (str/starts-with? arg "--")
           (if (str/blank? value)
             (when-not (contains? arg-map arg)

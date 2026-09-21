@@ -429,3 +429,4 @@ Feature: Claude subscription provider via CLI shell-out
     And the log has entries matching:
       | event          | error          |
       | :hail/deferred | :tool-protocol |
+

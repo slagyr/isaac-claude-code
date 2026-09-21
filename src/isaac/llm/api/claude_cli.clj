@@ -58,7 +58,7 @@
   [:drives-tool-loop? :command :extra-args :extraArgs
    :stream-non-tool-turns :streamNonToolTurns
    :stream-supports-tool-calls :streamSupportsToolCalls
-   :api :auth])
+   :api :auth :env])
 
 (defn- full-cfg? [cfg]
   (or (contains? cfg :drives-tool-loop?)
@@ -432,11 +432,27 @@
 (defn- command-path [cfg]
   (or (:command cfg) "claude"))
 
+(defn- config-env
+  "A provider's :env as plain strings. EDN may hand us keyword keys."
+  [cfg]
+  (reduce-kv (fn [m k v]
+               (assoc m (if (keyword? k) (name k) (str k)) (str v)))
+             {}
+             (or (:env cfg) {})))
+
 (defn- subprocess-env
-  ([]
-   (dissoc (into {} (.environment (ProcessBuilder. []))) "ANTHROPIC_API_KEY"))
-  ([nonce]
-   (assoc (subprocess-env) "ISAAC_MCP_NONCE" nonce)))
+  "The server's environment, minus ANTHROPIC_API_KEY, with the provider's own
+   :env merged over it. :env is how two claude-code providers hold two
+   subscriptions: CLAUDE_CONFIG_DIR isolates the CLI's login, not merely its
+   settings (isaac-12fo). The key stays stripped after the merge, so :env
+   cannot smuggle it back in, and Isaac's per-turn nonce outranks any
+   configured value."
+  ([cfg]
+   (-> (into {} (.environment (ProcessBuilder. [])))
+       (merge (config-env cfg))
+       (dissoc "ANTHROPIC_API_KEY")))
+  ([cfg nonce]
+   (assoc (subprocess-env cfg) "ISAAC_MCP_NONCE" nonce)))
 
 (defn- process-classpath []
   (System/getProperty "java.class.path"))
@@ -886,7 +902,7 @@
 (defn- fence-retry! [cfg request]
   (let [argv   (build-argv cfg request false nil)
         prompt (request-stdin cfg request)
-        env    (subprocess-env)]
+        env    (subprocess-env cfg)]
     (record-invocation! {:argv argv :env env :in prompt})
     (run-process! argv env prompt)))
 
@@ -921,7 +937,7 @@
                      (register-mcp-turn! cfg request))
         argv       (build-argv cfg request streaming? (:path mcp))
         prompt     (request-stdin cfg request)
-        env        (if mcp (subprocess-env (:nonce mcp)) (subprocess-env))]
+        env        (if mcp (subprocess-env cfg (:nonce mcp)) (subprocess-env cfg))]
     (maybe-log-fallback! cfg)
     (log-title-side-call! cfg)
     (install-cancel-hook! cfg)

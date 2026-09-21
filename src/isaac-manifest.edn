@@ -1,5 +1,5 @@
 {:id      :isaac.provider.claude-code
- :version "0.1.17"
+ :version "0.1.18"
  :factory isaac.module.protocol/module
 
  :isaac/cli
@@ -25,4 +25,9 @@
                       :drives-tool-loop?          true}
            :schema   {:drives-tool-loop?
                       {:type        :boolean
-                       :description "When true, claude-cli drives the tool loop (LoopDriver)."}}}}}
+                       :description "When true, claude-cli drives the tool loop (LoopDriver)."}
+                      :env
+                      {:type        :map
+                       :description "Environment for the spawned CLI, merged over the inherited one. Set CLAUDE_CONFIG_DIR to give this provider its own subscription login."
+                       :key-spec    {:type :keyword}
+                       :value-spec  {:type :string}}}}}}
