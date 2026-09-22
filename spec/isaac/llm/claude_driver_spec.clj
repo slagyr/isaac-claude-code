@@ -379,6 +379,54 @@
         (should= :cli-error (:reason fallback))
         (should (re-find #"(?s).*failed to connect.*" (str (:stderr fallback)))))))
 
+  (it "answers a session limit after cycles with rate-limited weather, not a fence fallback (isaac-2sxf)"
+    (sut/set-fake-cli!
+      [{:cycle 1 :kind "tool_use" :payload "{\"name\":\"exec__run\",\"input\":{\"command\":\"echo hi\"}}"}
+       {:cycle 1 :kind "usage" :payload "{\"input_tokens\":200,\"cache_read_input_tokens\":50,\"cache_creation_input_tokens\":10}"}
+       {:cycle 2 :kind "error_result" :payload "You've hit your session limit · resets 4:40pm (America/Phoenix)"}])
+    (log/capture-logs
+      (let [api      (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+            response (api/chat api {:model "sonnet" :messages [{:role "user" :content "go"}]})]
+        (should= :rate-limited (:error response))
+        (should= true (:unavailable? response))
+        (should= :wall (:reason response))
+        (should (str/includes? (str (:message response)) "session limit"))
+        (should (str/includes? (str (:message response)) "4:40pm"))
+        (should-be-nil (:content response))
+        (should= 1 (count (sut/invocations)))
+        (should= [] (filterv #(= :claude/driver-fallback (:event %)) @log/captured-logs)))))
+
+  (it "answers a session limit on the first invocation with weather, no cycles run (isaac-2sxf)"
+    (sut/set-fake-cli!
+      [{:cycle 1 :kind "error_result" :payload "You've hit your session limit · resets 4:40pm (America/Phoenix)"}])
+    (log/capture-logs
+      (let [api      (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+            response (api/chat api {:model "sonnet" :messages [{:role "user" :content "go"}]})]
+        (should= :rate-limited (:error response))
+        (should= :wall (:reason response))
+        (should= 1 (count (sut/invocations)))
+        (should= [] (filterv #(= :claude/driver-fallback (:event %)) @log/captured-logs)))))
+
+  (it "answers an expired OAuth session with auth weather, not a fence fallback (isaac-2sxf)"
+    (sut/set-fake-cli!
+      [{:cycle 1 :kind "error_result" :payload "Failed to authenticate: OAuth session expired"}])
+    (log/capture-logs
+      (let [api      (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+            response (api/chat api {:model "sonnet" :messages [{:role "user" :content "go"}]})]
+        (should= :auth-failed (:error response))
+        (should= true (:unavailable? response))
+        (should= :auth (:reason response))
+        (should= 1 (count (sut/invocations)))
+        (should= [] (filterv #(= :claude/driver-fallback (:event %)) @log/captured-logs)))))
+
+  (it "reads the limit only from the CLI's own error signal, never the transcript (isaac-benp)"
+    (sut/set-fake-cli!
+      [{:cycle 1 :kind "text" :payload "the log says: You've hit your session limit"}])
+    (let [api      (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+          response (api/chat api {:model "sonnet" :messages [{:role "user" :content "go"}]})]
+      (should-be-nil (:error response))
+      (should= "the log says: You've hit your session limit" (:content response))))
+
   (it "emits stream-json user envelopes on stdin, never bare role/content lines"
     (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "second"}])
     (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})]

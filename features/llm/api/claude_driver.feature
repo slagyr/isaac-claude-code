@@ -220,6 +220,42 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | --print          |       |
       | --output-format  | json  |
 
+  Scenario: a session limit after the cycles have run is weather, not a fence fallback (isaac-2sxf)
+    The seat's five-hour window closed mid-turn. Running the CLI again without
+    MCP only meets the same wall, and its init event is not an answer: the turn
+    suspends on :wall and resumes when the window reopens.
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind         | payload                                                                            |
+      | 1     | tool_use     | {"name":"exec__run","input":{"command":"echo hi"}}                                  |
+      | 1     | usage        | {"input_tokens":200,"cache_read_input_tokens":50,"cache_creation_input_tokens":10}  |
+      | 2     | error_result | You've hit your session limit · resets 4:40pm (America/Phoenix)                     |
+    When the user sends "run it" on session "main"
+    Then the turn result is "suspended"
+    And a turn marker exists for session "main" with:
+      | key       | value |
+      | suspended | true  |
+      | reason    | :wall |
+    And the fake Claude Code was invoked exactly once
+    And session "main" has no transcript entry containing "subtype"
+    And the log has no entries matching:
+      | event                   |
+      | :claude/driver-fallback |
+
+  Scenario: a session limit on the very first invocation is weather too (isaac-2sxf)
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind         | payload                                                         |
+      | 1     | error_result | You've hit your session limit · resets 4:40pm (America/Phoenix) |
+    When the user sends "run it" on session "main"
+    Then the turn result is "suspended"
+    And a turn marker exists for session "main" with:
+      | key       | value |
+      | suspended | true  |
+      | reason    | :wall |
+    And the fake Claude Code was invoked exactly once
+    And the log has no entries matching:
+      | event                   |
+      | :claude/driver-fallback |
+
   Scenario: stdin carries stream-json user envelopes, never bare role/content lines (isaac-6z4r)
     The real CLI (2.1.236) ignores a bare {"role":…,"content":…} line, reads
     EOF and exits 0 with no output. Every stdin line must be

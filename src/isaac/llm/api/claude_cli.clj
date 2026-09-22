@@ -357,6 +357,17 @@
 (def ^:private auth-failure-re
   #"(?i)not logged in|please run\s*/login|invalid api key|not authenticated|no credentials|unauthorized")
 
+(def ^:private limit-failure-re
+  "The CLI's own words for a seat that has run out of window: the subscription
+   session limit, an API usage limit, or a plain rate limit."
+  #"(?i)session limit|usage limit|usage_limit_reached|rate[ _]limit|too many requests|credit balance|quota exceeded")
+
+(def ^:private cli-auth-failure-re
+  "Login trouble the CLI reports for itself. Narrower than `auth-failure-re`:
+   this one is matched only against stderr and the result event's error text,
+   never the transcript (isaac-benp)."
+  #"(?i)failed to authenticate|oauth (?:session |token )?expired|not logged in|please run\s*/login|invalid api key|not authenticated|no credentials")
+
 (defn- auth-failure? [out err]
   (boolean (re-find auth-failure-re (str (or out "") "\n" (or err "")))))
 
@@ -906,6 +917,32 @@
     (record-invocation! {:argv argv :env env :in prompt})
     (run-process! argv env prompt)))
 
+(defn- result-error-text
+  "The CLI's own error signal: the text of a result event that reports
+   is_error. Never the assistant or tool text in the stream (isaac-benp)."
+  [events]
+  (when-let [evt (last (filter result-event? events))]
+    (when (result-error? evt)
+      (not-empty (str/trim (str (:result evt)))))))
+
+(defn- weather-kind
+  "Provider weather the CLI reported for itself, in the agent's vocabulary
+   (isaac.drive.provider-wall): a limit is a wall, a login failure is auth."
+  [text]
+  (cond
+    (re-find limit-failure-re text) {:error :rate-limited :reason :wall}
+    (re-find cli-auth-failure-re text) {:error :auth-failed :reason :auth}))
+
+(defn- cli-weather
+  "Classify a run as provider weather when the CLI's own error signal says a
+   limit or a login failure ended it. A limit hit mid-turn is weather, not a
+   missing MCP server, so it never takes the fence fallback (isaac-2sxf)."
+  [result events]
+  (let [text (str/join "\n" (remove str/blank?
+                                    [(str (:err result)) (result-error-text events)]))]
+    (when-let [kind (weather-kind text)]
+      (assoc kind :unavailable? true :message (stderr-head text)))))
+
 (defn- cli-start-failed? [result]
   (and (not (zero? (:exit result)))
        (str/blank? (:out result))))
@@ -944,13 +981,22 @@
     (capture-stdin! prompt)
     (record-invocation! {:argv argv :env env :in prompt})
     (try
-      (let [result (run-process! argv env prompt)
-            events (parse-stream-events (:out result))
-            init   (init-event events)]
-        (when (and (:drives-tool-loop? cfg) (not @fail-mcp-init?*))
+      (let [result  (run-process! argv env prompt)
+            events  (parse-stream-events (:out result))
+            init    (init-event events)
+            driven  (and (:drives-tool-loop? cfg) (not @fail-mcp-init?*))
+            weather (when driven (cli-weather result events))]
+        (when driven
           (when init (log-mcp-status! init))
           (log-driver-exit! result events))
         (cond
+          ;; A seat that ran out of window, or a login that expired, is provider
+          ;; weather: the drive parks and resumes it. Re-running without MCP
+          ;; would only hit the same wall and answer with the CLI's init event
+          ;; (isaac-2sxf).
+          weather
+          (assoc result :weather weather)
+
           (and (:drives-tool-loop? cfg)
                (not @fail-mcp-init?*)
                (cli-start-failed? result))
@@ -1097,6 +1143,13 @@
         (not (str/blank? think)) (assoc :reasoning {:summary think})
         (seq @asides) (assoc :asides @asides)))))
 
+(defn- weather-response
+  "The provider-error response for a run the CLI ended with weather. It carries
+   the CLI's own message and no content — a `system`/`init` event is never
+   assistant text (isaac-2sxf)."
+  [weather model]
+  (assoc weather :model model :usage (zero-usage)))
+
 ;; endregion ^^^^^ CLI Invocation ^^^^^
 
 ;; region ----- LoopDriver -----
@@ -1212,12 +1265,12 @@
 (defn- chat* [request _provider-name cfg]
   (ensure-driver! cfg)
   (let [result (invoke! cfg request false)]
-    (if (failed? result)
-      (error-response result)
-      (if (driven? cfg)
-        (parse-stream-json-response (:out result) (:model request))
-        (let [{:keys [text usage]} (parse-json-output (:out result))]
-          (success-response (:model request) text usage))))))
+    (cond
+      (:weather result) (weather-response (:weather result) (:model request))
+      (failed? result) (error-response result)
+      (driven? cfg) (parse-stream-json-response (:out result) (:model request))
+      :else (let [{:keys [text usage]} (parse-json-output (:out result))]
+              (success-response (:model request) text usage)))))
 
 (defn- retry-protocol [request provider-name cfg result]
   (if (and (= :tool-protocol (:error result)) (zero? *protocol-attempts*))
@@ -1236,7 +1289,9 @@
                             (:streamNonToolTurns cfg)))
         result     (invoke! cfg request streaming?)
         json?      (or (not streaming?) @fail-mcp-init?* @exit-before-stream*)]
-    (if-not (failed? result)
+    (if-let [weather (:weather result)]
+      (weather-response weather (:model request))
+      (if-not (failed? result)
       (if json?
         (let [{:keys [text usage]} (parse-json-output (:out result))
               response (success-response (:model request) text usage)]
@@ -1262,7 +1317,7 @@
             (if (str/blank? think)
               (dissoc response :reasoning)
               (assoc response :reasoning {:summary think})))))
-      (error-response result))))
+        (error-response result)))))
 
 (defn chat-stream [request on-chunk provider-name cfg]
   (let [result (stream-once request on-chunk cfg)]
