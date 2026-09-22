@@ -538,8 +538,9 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
     2026-09-20 20:15:39Z (isaac-verify, opus): 27 tool calls produced 27
     identical `:session/stamp-implausible :prompt-tokens 802832` warnings inside
     153ms, each one re-reading the whole transcript. Only the final cycle
-    stamps, so the count stays fixed (one from that cycle, one from the
-    message-stored path) instead of growing with the number of tool calls.
+    stamps, so the session carries one stamp from that cycle instead of one
+    per tool call. Since isaac-dgod a per-request stamp above the window is
+    recorded as it stands and compacts next; it is no longer "implausible".
     Given the isaac EDN file "config/models/sub-sonnet.edn" exists with:
       | path           | value       |
       | model          | sonnet      |
@@ -556,8 +557,8 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
     Then the response is "both done"
     And the following sessions match:
       | name | last-input-tokens |
-      | main | 200000            |
-    And the log has 2 entries with event ":session/stamp-implausible"
+      | main | 802832            |
+    And the log has 0 entries with event ":session/stamp-implausible"
 
   Scenario: two claude-code providers spawn the CLI with their own environments (isaac-12fo)
     Micah holds several Claude Code subscriptions. `CLAUDE_CONFIG_DIR` isolates
