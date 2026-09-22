@@ -256,6 +256,43 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | event                   |
       | :claude/driver-fallback |
 
+  Scenario: a turn walled on its last request keeps the usage of the cycles that finished (isaac-ewxh)
+    Seventy-nine cycles of work are not free because the eightieth request met
+    the wall: the session keeps their sums and the gauge keeps the last cycle's
+    prompt size, and the driver's exit line carries the turn's cost.
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind         | payload                                                                                        |
+      | 1     | tool_use     | {"name":"exec__run","input":{"command":"echo one"}}                                             |
+      | 1     | usage        | {"input_tokens":200,"output_tokens":7,"cache_read_input_tokens":50,"cache_creation_input_tokens":10} |
+      | 2     | tool_use     | {"name":"exec__run","input":{"command":"echo two"}}                                             |
+      | 2     | usage        | {"input_tokens":260,"output_tokens":7,"cache_read_input_tokens":60,"cache_creation_input_tokens":0}  |
+      | 3     | tool_use     | {"name":"exec__run","input":{"command":"echo three"}}                                           |
+      | 3     | usage        | {"input_tokens":300,"output_tokens":7,"cache_read_input_tokens":70,"cache_creation_input_tokens":0}  |
+      | 4     | error_result | You've hit your session limit · resets 4:40pm (America/Phoenix)                                 |
+    When the user sends "run it" on session "main"
+    Then the turn result is "suspended"
+    And the following sessions match:
+      | name | last-input-tokens | turn-input-tokens |
+      | main | 370               | 950               |
+    And the log has entries matching:
+      | event               | provider | cycles | input-tokens | cache-read-tokens | cache-write-tokens | output-tokens |
+      | :claude/driver-exit | claude   | 3      | 760          | 180               | 10                 | 21            |
+
+  Scenario: three clean cycles tally the sums they always did (isaac-ewxh)
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind     | payload                                                                                        |
+      | 1     | tool_use | {"name":"exec__run","input":{"command":"echo one"}}                                             |
+      | 1     | usage    | {"input_tokens":200,"output_tokens":7,"cache_read_input_tokens":50,"cache_creation_input_tokens":10} |
+      | 2     | tool_use | {"name":"exec__run","input":{"command":"echo two"}}                                             |
+      | 2     | usage    | {"input_tokens":260,"output_tokens":7,"cache_read_input_tokens":60,"cache_creation_input_tokens":0}  |
+      | 3     | text     | all done                                                                                        |
+      | 3     | usage    | {"input_tokens":300,"output_tokens":9,"cache_read_input_tokens":70,"cache_creation_input_tokens":0}  |
+    When the user sends "run it" on session "main"
+    Then the response is "all done"
+    And the following sessions match:
+      | name | last-input-tokens | turn-input-tokens |
+      | main | 370               | 950               |
+
   Scenario: stdin carries stream-json user envelopes, never bare role/content lines (isaac-6z4r)
     The real CLI (2.1.236) ignores a bare {"role":…,"content":…} line, reads
     EOF and exits 0 with no output. Every stdin line must be

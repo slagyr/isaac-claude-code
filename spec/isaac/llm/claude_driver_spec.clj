@@ -419,6 +419,48 @@
         (should= 1 (count (sut/invocations)))
         (should= [] (filterv #(= :claude/driver-fallback (:event %)) @log/captured-logs)))))
 
+  (it "carries the completed cycles' usage on the weather response (isaac-ewxh)"
+    (sut/set-fake-cli!
+      [{:cycle 1 :kind "tool_use" :payload "{\"name\":\"exec__run\",\"input\":{\"command\":\"one\"}}"}
+       {:cycle 1 :kind "usage" :payload "{\"input_tokens\":200,\"output_tokens\":7,\"cache_read_input_tokens\":50,\"cache_creation_input_tokens\":10}"}
+       {:cycle 2 :kind "tool_use" :payload "{\"name\":\"exec__run\",\"input\":{\"command\":\"two\"}}"}
+       {:cycle 2 :kind "usage" :payload "{\"input_tokens\":260,\"output_tokens\":7,\"cache_read_input_tokens\":60,\"cache_creation_input_tokens\":0}"}
+       {:cycle 3 :kind "tool_use" :payload "{\"name\":\"exec__run\",\"input\":{\"command\":\"three\"}}"}
+       {:cycle 3 :kind "usage" :payload "{\"input_tokens\":300,\"output_tokens\":7,\"cache_read_input_tokens\":70,\"cache_creation_input_tokens\":0}"}
+       {:cycle 4 :kind "error_result" :payload "You've hit your session limit · resets 4:40pm (America/Phoenix)"}])
+    (log/capture-logs
+      (let [api      (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+            response (api/chat api {:model "sonnet" :messages [{:role "user" :content "go"}]})
+            exit-log (first (filter #(= :claude/driver-exit (:event %)) @log/captured-logs))]
+        (should= :rate-limited (:error response))
+        (should= [260 320 370] (mapv :prompt-tokens (:cycle-usages response)))
+        (should= {:prompt-tokens      950
+                  :output-tokens      21
+                  :cache-read-tokens  180
+                  :cache-write-tokens 10}
+                 (:usage response))
+        (should= 3 (:cycles exit-log))
+        (should= 760 (:input-tokens exit-log))
+        (should= 180 (:cache-read-tokens exit-log))
+        (should= 10 (:cache-write-tokens exit-log))
+        (should= 21 (:output-tokens exit-log)))))
+
+  (it "reports the per-turn sums on driver-exit for a clean driven turn (isaac-ewxh)"
+    (sut/set-fake-cli!
+      [{:cycle 1 :kind "tool_use" :payload "{\"name\":\"exec__run\",\"input\":{\"command\":\"one\"}}"}
+       {:cycle 1 :kind "usage" :payload "{\"input_tokens\":200,\"output_tokens\":7,\"cache_read_input_tokens\":50,\"cache_creation_input_tokens\":10}"}
+       {:cycle 2 :kind "text" :payload "done"}
+       {:cycle 2 :kind "usage" :payload "{\"input_tokens\":260,\"output_tokens\":9,\"cache_read_input_tokens\":60,\"cache_creation_input_tokens\":0}"}])
+    (log/capture-logs
+      (let [api      (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+            _        (api/chat api {:model "sonnet" :messages [{:role "user" :content "go"}]})
+            exit-log (first (filter #(= :claude/driver-exit (:event %)) @log/captured-logs))]
+        (should= 2 (:cycles exit-log))
+        (should= 460 (:input-tokens exit-log))
+        (should= 110 (:cache-read-tokens exit-log))
+        (should= 10 (:cache-write-tokens exit-log))
+        (should= 16 (:output-tokens exit-log)))))
+
   (it "reads the limit only from the CLI's own error signal, never the transcript (isaac-benp)"
     (sut/set-fake-cli!
       [{:cycle 1 :kind "text" :payload "the log says: You've hit your session limit"}])

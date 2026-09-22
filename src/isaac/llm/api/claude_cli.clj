@@ -886,13 +886,49 @@
 (defn- reply-contains-fence? [result]
   (str/includes? (str (:out result)) tool-call-open))
 
-(defn- log-driver-exit! [result events]
-  (let [result-evt (last (filter result-event? events))]
+(defn- event-usage
+  "The usage an event reports, or nil when it reports none. An empty usage map
+   is silence, not zero: a cycle that says nothing must not overwrite what the
+   cycle before it measured (isaac-ewxh)."
+  [event]
+  (let [u (or (:usage event)
+              (get-in event [:message :usage])
+              (get-in (unwrap-stream-event event) [:usage]))]
+    (when (map? u)
+      (if (contains? u :prompt-tokens) u (parse-cli-usage u)))))
+
+(defn- stream-cycle-usages
+  "Each completed cycle's usage, in stream order."
+  [events]
+  (vec (keep event-usage events)))
+
+(defn- sum-usages [usages]
+  (reduce (fn [total usage]
+            (merge-with + total (select-keys usage [:prompt-tokens :output-tokens
+                                                    :cache-read-tokens :cache-write-tokens])))
+          {:prompt-tokens 0 :output-tokens 0 :cache-read-tokens 0 :cache-write-tokens 0}
+          usages))
+
+(defn- log-driver-exit!
+  "One line per driven turn, carrying what the turn cost. A turn whose last
+   request died still ran its cycles, and the log is where that cost stays
+   readable when the session file cannot be (isaac-ewxh)."
+  [result events]
+  (let [result-evt  (last (filter result-event? events))
+        usages      (stream-cycle-usages events)
+        sums        (sum-usages usages)
+        cache-read  (:cache-read-tokens sums)
+        cache-write (:cache-write-tokens sums)]
     (log/info :claude/driver-exit
               :provider "claude"
               :exit-code (or (:exit result) 0)
               :result-event (boolean result-evt)
               :stderr (not-empty (stderr-head (:err result)))
+              :cycles (count usages)
+              :input-tokens (- (:prompt-tokens sums) cache-read cache-write)
+              :cache-read-tokens cache-read
+              :cache-write-tokens cache-write
+              :output-tokens (:output-tokens sums)
               :events (event-type-counts events))))
 
 (defn- driving? [cfg]
@@ -941,7 +977,12 @@
   (let [text (str/join "\n" (remove str/blank?
                                     [(str (:err result)) (result-error-text events)]))]
     (when-let [kind (weather-kind text)]
-      (assoc kind :unavailable? true :message (stderr-head text)))))
+      (let [usages (stream-cycle-usages events)]
+        (assoc kind
+               :unavailable? true
+               :message (stderr-head text)
+               :usage (sum-usages usages)
+               :cycle-usages usages)))))
 
 (defn- cli-start-failed? [result]
   (and (not (zero? (:exit result)))
@@ -1077,13 +1118,6 @@
                more))
       {:deltas deltas :reasoning reasoning :usage usage})))
 
-(defn- event-usage [event]
-  (when-let [u (or (:usage event)
-                   (get-in event [:message :usage])
-                   (get-in (unwrap-stream-event event) [:usage]))]
-    (when (map? u)
-      (normalize-usage u))))
-
 (defn- parse-stream-json-response [out model]
   (let [events       (parse-stream-events out)
         tool-calls   (atom [])
@@ -1146,9 +1180,10 @@
 (defn- weather-response
   "The provider-error response for a run the CLI ended with weather. It carries
    the CLI's own message and no content — a `system`/`init` event is never
-   assistant text (isaac-2sxf)."
+   assistant text (isaac-2sxf) — plus the usage of every cycle that finished
+   before the wall (isaac-ewxh)."
   [weather model]
-  (assoc weather :model model :usage (zero-usage)))
+  (assoc weather :model model))
 
 ;; endregion ^^^^^ CLI Invocation ^^^^^
 
