@@ -426,7 +426,8 @@
   ;; pure completion; `--max-turns` does not exist in this CLI version. Isaac
   ;; owns the transcript, so session persistence stays off. (isaac-kn7y)
   ;; Driven turns (isaac-5xn7 / isaac-6z4r) add stream-json input + MCP config
-  ;; so Claude Code owns the tool loop against isaac's mcp-bridge.
+  ;; so Claude Code owns the tool loop against isaac's per-turn listener
+  ;; (isaac-mbnb: HTTP straight to the listener, no bridge process).
   (cond-> ["--print"
            "--output-format" (if (or streaming? driven?) "stream-json" "json")]
     (or streaming? driven?) (conj "--include-partial-messages" "--verbose")
@@ -455,26 +456,22 @@
   "The server's environment, minus ANTHROPIC_API_KEY, with the provider's own
    :env merged over it. :env is how two claude-code providers hold two
    subscriptions: CLAUDE_CONFIG_DIR isolates the CLI's login, not merely its
-   settings (isaac-12fo). The key stays stripped after the merge, so :env
-   cannot smuggle it back in, and Isaac's per-turn nonce outranks any
-   configured value."
-  ([cfg]
-   (-> (into {} (.environment (ProcessBuilder. [])))
-       (merge (config-env cfg))
-       (dissoc "ANTHROPIC_API_KEY")))
-  ([cfg nonce]
-   (assoc (subprocess-env cfg) "ISAAC_MCP_NONCE" nonce)))
+   settings (isaac-12fo). The key stays stripped after the merge."
+  [cfg]
+  (-> (into {} (.environment (ProcessBuilder. [])))
+      (merge (config-env cfg))
+      (dissoc "ANTHROPIC_API_KEY")))
 
-(defn- process-classpath []
-  (System/getProperty "java.class.path"))
-
-(defn- write-mcp-config! [turn-id url]
+(defn- write-mcp-config!
+  "The MCP config Claude Code reads: an HTTP server naming this turn's own
+   loopback listener, with the per-turn nonce in the Authorization header —
+   Claude Code's Streamable-HTTP MCP client talks to it directly, no stdio
+   bridge process in between (isaac-mbnb)."
+  [url nonce]
   (let [file (java.io.File/createTempFile "isaac-mcp-" ".json")
-        body {:mcpServers {:isaac {:command "bb"
-                                   :args    ["-cp" (process-classpath)
-                                             "-m" "isaac.mcp-bridge.main"
-                                             "--turn" turn-id
-                                             "--url" url]}}}]
+        body {:mcpServers {:isaac {:type    "http"
+                                   :url     url
+                                   :headers {:Authorization (str "Bearer " nonce)}}}}]
     (spit file (json/generate-string body))
     (reset! last-mcp-config* {:path (.getAbsolutePath file) :body body})
     (.getAbsolutePath file)))
@@ -499,7 +496,7 @@
                                     :tool-fn     tool-fn
                                     :tools       tools})
       (let [{:keys [url nonce]} (mcp-listener/start! turn-id)]
-        {:turn-id turn-id :nonce nonce :path (write-mcp-config! turn-id url)})
+        {:turn-id turn-id :nonce nonce :path (write-mcp-config! url nonce)})
       (catch Exception e
         (mcp-turns/clear! turn-id)
         (throw e)))))
@@ -1015,7 +1012,7 @@
                      (register-mcp-turn! cfg request))
         argv       (build-argv cfg request streaming? (:path mcp))
         prompt     (request-stdin cfg request)
-        env        (if mcp (subprocess-env cfg (:nonce mcp)) (subprocess-env cfg))]
+        env        (subprocess-env cfg)]
     (maybe-log-fallback! cfg)
     (log-title-side-call! cfg)
     (install-cancel-hook! cfg)

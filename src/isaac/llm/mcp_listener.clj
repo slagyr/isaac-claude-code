@@ -1,9 +1,11 @@
 (ns isaac.llm.mcp-listener
-  "Authenticated loopback listener for one process-owned MCP turn."
+  "Authenticated loopback listener for one process-owned MCP turn. Claude
+   Code's HTTP MCP client talks to this directly — no stdio bridge process
+   sits between them (isaac-mbnb)."
   (:require
     [cheshire.core :as json]
     [clojure.java.io :as io]
-    [isaac.mcp.turns :as mcp-turns]
+    [isaac.llm.mcp-route :as mcp-route]
     [org.httpkit.server :as httpkit]))
 
 (defonce ^:private listeners* (atom {}))
@@ -14,16 +16,27 @@
     (nil? body)    ""
     :else          (slurp (io/reader body))))
 
-(defn- response [status body]
+(defn- json-response [status body]
   {:status  status
    :headers {"Content-Type" "application/json"}
    :body    (json/generate-string body)})
 
 (defn- handler [turn-id nonce]
   (fn [request]
-    (if (= (str "Bearer " nonce) (get-in request [:headers "authorization"]))
-      (response 200 (or (mcp-turns/handle turn-id (request-body (:body request))) {}))
-      (response 401 {:error "unauthorized"}))))
+    (cond
+      ;; Streamable HTTP servers may accept a GET for an SSE stream; isaac's
+      ;; per-turn listener never streams, so a GET here is simply refused.
+      (not= :post (:request-method request))
+      (json-response 405 {:error "method not allowed"})
+
+      (not= (str "Bearer " nonce) (get-in request [:headers "authorization"]))
+      (json-response 401 {:error "unauthorized"})
+
+      :else
+      (let [{:keys [status body]} (mcp-route/dispatch turn-id (request-body (:body request)))]
+        {:status  status
+         :headers {"Content-Type" "application/json"}
+         :body    (or body "")}))))
 
 (defn stop! [turn-id]
   (when-let [server (get-in @listeners* [turn-id :server])]

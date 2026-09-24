@@ -2,6 +2,7 @@
   (:require
     [babashka.http-client :as http]
     [cheshire.core :as json]
+    [clojure.string :as str]
     [isaac.llm.mcp-listener :as sut]
     [isaac.mcp.turns :as mcp-turns]
     [speclj.core :refer :all]))
@@ -11,6 +12,11 @@
                   :headers (cond-> {"Content-Type" "application/json"}
                              nonce (assoc "Authorization" (str "Bearer " nonce)))
                   :throw   false}))
+
+(defn- get-request [url nonce]
+  (http/get url {:headers (cond-> {}
+                             nonce (assoc "Authorization" (str "Bearer " nonce)))
+                 :throw   false}))
 
 (describe "per-turn MCP listener"
 
@@ -49,4 +55,29 @@
     (let [{:keys [url nonce]} (sut/start! "t-done")]
       (sut/stop! "t-done")
       (should-throw (post url nonce {:jsonrpc "2.0" :id 1 :method "tools/list"}))))
+
+  (it "answers initialize itself, echoing the request's protocolVersion, serverInfo, and tools capability (isaac-mbnb)"
+    (mcp-turns/register! "t-init" {:session-key "main" :tool-fn (constantly "ok") :tools []})
+    (let [{:keys [url nonce]} (sut/start! "t-init")
+          response (post url nonce {:jsonrpc "2.0" :id 1 :method "initialize"
+                                    :params  {:protocolVersion "2025-03-26"}})
+          body     (json/parse-string (:body response) true)]
+      (should= 200 (:status response))
+      (should= 1 (:id body))
+      (should= "2025-03-26" (get-in body [:result :protocolVersion]))
+      (should= "isaac" (get-in body [:result :serverInfo :name]))
+      (should= {} (get-in body [:result :capabilities :tools]))))
+
+  (it "answers a notification with 202 and an empty body, never dispatching it as a request (isaac-mbnb)"
+    (mcp-turns/register! "t-notify" {:session-key "main" :tool-fn (constantly "ok") :tools []})
+    (let [{:keys [url nonce]} (sut/start! "t-notify")
+          response (post url nonce {:jsonrpc "2.0" :method "notifications/initialized"})]
+      (should= 202 (:status response))
+      (should (str/blank? (:body response)))))
+
+  (it "refuses a GET request with 405 (isaac-mbnb)"
+    (mcp-turns/register! "t-get" {:session-key "main" :tool-fn (constantly "ok") :tools []})
+    (let [{:keys [url nonce]} (sut/start! "t-get")
+          response (get-request url nonce)]
+      (should= 405 (:status response))))
   )

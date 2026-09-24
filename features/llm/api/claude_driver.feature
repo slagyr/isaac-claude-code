@@ -2,8 +2,8 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
 
   With `:drives-tool-loop? true` on the claude provider, a turn spawns one
   `claude` process (stream-json in/out, no claude tools, `--mcp-config`
-  pointing at isaac's mcp-bridge for THIS turn) and lets Claude Code run the
-  native tool loop. Every tool call still executes through the drive's tool
+  pointing straight at THIS turn's own loopback listener) and lets Claude
+  Code run the native tool loop. Every tool call still executes through the drive's tool
   function via the per-turn MCP registry (isaac-zocg), so the transcript,
   comm events, and per-cycle token stamps are identical to the default loop
   (isaac-1sdl). Isaac owns the transcript: one process per turn, history
@@ -313,9 +313,9 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | user | user         | two                               |
     And the fake Claude Code received no bare stdin lines
 
-  Scenario: a driven turn's MCP config runs the bridge under bb against this turn's own listener (isaac-ejj3)
-    The bridge is not an isaac command: it runs with the invoking process's
-    classpath and talks to the per-turn listener that process opened.
+  Scenario: a driven turn's MCP config names an HTTP server at this turn's own listener, no command (isaac-mbnb)
+    Claude Code's HTTP MCP client talks to the per-turn listener directly —
+    no bridge process, no command/args, just a URL and a bearer header.
     Given a fake Claude Code on the path scripted with:
       | cycle | kind     | payload                                            |
       | 1     | tool_use | {"name":"exec__run","input":{"command":"echo hi"}} |
@@ -326,9 +326,9 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | arg                 | value          |
       | --strict-mcp-config |                |
       | --mcp-config        | #".*\.json"    |
-    And the MCP config handed to the fake Claude Code names server "isaac" running:
-      | argv                                                                                               |
-      | #"^bb -cp .+ -m isaac\.mcp-bridge\.main --turn [0-9a-f-]{36} --url http://127\.0\.0\.1:[0-9]+$" |
+    And the MCP config handed to the fake Claude Code names server "isaac" as HTTP:
+      | value                                                          |
+      | #"^type=http url=http://127\.0\.0\.1:[0-9]+ authorization=Bearer [0-9a-f-]{36}$" |
 
   Scenario: a driven turn's system prompt carries no textual tool-call protocol (isaac-lrvb)
     On the driven path the tools are native MCP tools; teaching the fence
@@ -364,7 +364,7 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | --print          |       |
       | --output-format  | json  |
 
-  Scenario: the turn's nonce reaches Claude Code only through its environment, never the server's port or token (isaac-ejj3)
+  Scenario: the turn's nonce and listener are private to the driven turn, never the server's own port or token (isaac-mbnb)
     Given the isaac EDN file "config/isaac.edn" exists with:
       | path              | value          |
       | http.port       | 7912           |
@@ -375,12 +375,9 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | 2     | text     | hi came back                                       |
     When the user sends "run it" on session "main"
     Then the response is "hi came back"
-    And the fake Claude Code was invoked with:
-      | arg                      | value |
-      | (ISAAC_MCP_NONCE in env) |       |
-    And the MCP config handed to the fake Claude Code names server "isaac" running:
-      | argv                                                         |
-      | #"^(?!.*7912)(?!.*harbor-secret)(?!.*--token)(?!.*NONCE).+$" |
+    And the MCP config handed to the fake Claude Code names server "isaac" as HTTP:
+      | value                                                     |
+      | #"^(?!.*7912)(?!.*harbor-secret)(?!.*--token).+$"          |
 
   Scenario: a provider of type claude-code under another name drives the turn (isaac-ejj3)
     Given the isaac EDN file "config/providers/harbor.edn" exists with:
@@ -428,8 +425,8 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | event                   |
       | :claude/driver-fallback |
 
-  Scenario: an MCP tool call is executed once, under isaac's tool name, and recorded from the bridge's result (isaac-1tmw)
-    Claude Code names MCP tools mcp__<server>__<tool>. The bridge executes the
+  Scenario: an MCP tool call is executed once, under isaac's tool name, and recorded from the listener's result (isaac-1tmw)
+    Claude Code names MCP tools mcp__<server>__<tool>. The listener executes the
     call through the turn registry; the driver must record that pair under
     isaac's own name (exec__run) and never re-dispatch the call through the
     drive's tool function. Field run 2026-09-08 20:15Z: seven toolResults for

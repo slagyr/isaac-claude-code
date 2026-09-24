@@ -512,7 +512,7 @@
                                 (or (get-in evt [:message :content]) [])))
                         events))))
 
-  (it "passes --mcp-config that runs the bridge under bb against this turn's listener"
+  (it "passes --mcp-config naming an HTTP server at this turn's own listener, bearer in the header, no command"
     (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "ok"}])
     (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})]
       (api/chat api {:model "sonnet" :messages [{:role "user" :content "hi"}]})
@@ -522,18 +522,14 @@
             path       (when (<= 0 idx) (nth argv (inc idx)))
             saved      (sut/last-mcp-config)
             server     (get-in saved [:body :mcpServers :isaac])
-            args       (:args server)
-            bridge-url (nth args (inc (.indexOf args "--url")))
-            nonce      (get-in invocation [:env "ISAAC_MCP_NONCE"])]
+            auth       (get-in server [:headers :Authorization])]
         (should (<= 0 idx))
         (should (re-find #"\.json$" (str path)))
-        (should= "bb" (:command server))
-        (should= "-cp" (first args))
-        (should-not (str/blank? (second args)))
-        (should= ["-m" "isaac.mcp-bridge.main"] (subvec args 2 4))
-        (should (re-find #"http://127\.0\.0\.1:\d+" bridge-url))
-        (should-not (str/blank? nonce))
-        (should-not (str/includes? (pr-str (:body saved)) nonce)))))
+        (should= "http" (:type server))
+        (should-be-nil (:command server))
+        (should-be-nil (:args server))
+        (should (re-find #"^http://127\.0\.0\.1:\d+$" (str (:url server))))
+        (should (re-find #"^Bearer [0-9a-f-]{36}$" (str auth))))))
 
   (it "stops the listener and clears the registry when the driven turn ends"
     (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "ok"}])
@@ -650,11 +646,9 @@
                                   :mcp-token      "harbor-secret"})]
       (api/chat api {:model "sonnet" :messages [{:role "user" :content "hi"}]})
       (let [server (get-in (sut/last-mcp-config) [:body :mcpServers :isaac])
-            argv*  (str/join " " (concat [(:command server)] (:args server)))]
-        (should-not (str/includes? argv* "9000"))
-        (should-not (str/includes? argv* "harbor-secret"))
-        (should-not (str/includes? argv* "--server"))
-        (should-not (str/includes? argv* "--token")))))
+            combo  (pr-str server)]
+        (should-not (str/includes? combo "9000"))
+        (should-not (str/includes? combo "harbor-secret")))))
 
   (it "does not fall back when init reports isaac pending with zero tools"
     (sut/set-fake-cli! [{:cycle 1 :kind "mcp_status" :payload "{\"mcp_servers\":[{\"name\":\"isaac\",\"status\":\"pending\"}],\"tools\":[]}"}

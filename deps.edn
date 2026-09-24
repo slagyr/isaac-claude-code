@@ -50,8 +50,7 @@
          :main-opts ["-m" "speclj.main" "-c"
                      "spec/isaac/llm/claude_cli_spec.clj"
                      "spec/isaac/llm/claude_driver_spec.clj"
-                     "spec/isaac/llm/claude_cli_real_spec.clj"
-                     "spec/isaac/mcp_bridge/main_spec.clj"]}
+                     "spec/isaac/llm/claude_cli_real_spec.clj"]}
 
   :features {:extra-paths ["spec"]
              :extra-deps {io.github.slagyr/isaac-http {:git/url "https://github.com/slagyr/isaac-http.git"

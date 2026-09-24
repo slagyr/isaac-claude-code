@@ -33,4 +33,19 @@
                                     {:jsonrpc "2.0" :id 2 :result {}})]
       (let [body (java.io.ByteArrayInputStream. (.getBytes "{\"jsonrpc\":\"2.0\",\"id\":2}" "UTF-8"))]
         (should= 200 (:status (sut/handle {:route-params {:id "t-stream"} :body body}))))))
+
+  (it "answers initialize itself, echoing the request's protocolVersion (isaac-mbnb)"
+    (let [{:keys [status body]} (sut/dispatch "t-init" "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-03-26\"}}")
+          parsed (json/parse-string body true)]
+      (should= 200 status)
+      (should= 1 (:id parsed))
+      (should= "2025-03-26" (get-in parsed [:result :protocolVersion]))
+      (should= "isaac" (get-in parsed [:result :serverInfo :name]))
+      (should= {} (get-in parsed [:result :capabilities :tools]))))
+
+  (it "answers a notification with 202 and a nil body, never reaching the registry (isaac-mbnb)"
+    (with-redefs [sut/handle-turn (fn [& _] (throw (ex-info "should not dispatch a notification" {})))]
+      (let [{:keys [status body]} (sut/dispatch "t-notify" "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}")]
+        (should= 202 status)
+        (should-be-nil body))))
   )

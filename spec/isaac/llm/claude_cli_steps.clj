@@ -112,10 +112,6 @@
           (when (contains? env "ANTHROPIC_API_KEY")
             (swap! failures conj "ANTHROPIC_API_KEY present in subprocess env"))
 
-          (= arg "(ISAAC_MCP_NONCE in env)")
-          (when (str/blank? (get env "ISAAC_MCP_NONCE"))
-            (swap! failures conj "ISAAC_MCP_NONCE missing from subprocess env"))
-
           (re-matches #"\(env [^=]+=.*\)" arg)
           (let [[_ k v] (re-matches #"\(env ([^=]+)=(.*)\)" arg)]
             (when-not (= v (get env k))
@@ -598,18 +594,20 @@
       (g/should (= "user" (str (:type line))))
       (g/should (map? (:message line))))))
 
-(defn mcp-config-names-server-running [name table]
+(defn mcp-config-names-http-server [name table]
   (session-steps/await-turn!)
-  (let [saved  (claude-cli/last-mcp-config)
-        server (get-in saved [:body :mcpServers (keyword name)])
-        argv   (str/join " " (concat [(:command server)] (:args server)))
+  (let [saved   (claude-cli/last-mcp-config)
+        server  (get-in saved [:body :mcpServers (keyword name)])
+        auth    (get-in server [:headers :Authorization])
+        combo   (str "type=" (:type server) " url=" (:url server) " authorization=" auth)
         regexes (map first (:rows table))]
     (g/should-not-be-nil server)
+    (g/should-be-nil (:command server))
     (doseq [cell regexes]
       (let [pattern (if (str/starts-with? (str cell) "#\"")
                       (re-pattern (str "(?s)" (second (re-matches #"#\"(.+)\"" cell))))
                       (re-pattern (str cell)))]
-        (g/should (re-find pattern argv))))))
+        (g/should (re-find pattern combo))))))
 
 (defn claude-code-manifest-declares-no-cli-commands []
   (let [manifest (edn/read-string (slurp "src/isaac-manifest.edn"))]
@@ -653,8 +651,8 @@
   isaac.llm.claude-cli-steps/fake-claude-code-exits-before-streaming)
 (defthen "the fake Claude Code received on stdin:" isaac.llm.claude-cli-steps/fake-claude-code-received-on-stdin)
 (defthen "the fake Claude Code received no bare stdin lines" isaac.llm.claude-cli-steps/fake-claude-code-received-no-bare-stdin-lines)
-(defthen "the MCP config handed to the fake Claude Code names server {name:string} running:"
-  isaac.llm.claude-cli-steps/mcp-config-names-server-running)
+(defthen "the MCP config handed to the fake Claude Code names server {name:string} as HTTP:"
+  isaac.llm.claude-cli-steps/mcp-config-names-http-server)
 (defthen "the claude-code manifest declares no :isaac/cli commands"
   isaac.llm.claude-cli-steps/claude-code-manifest-declares-no-cli-commands)
 (defthen "the fake Claude Code was terminated" isaac.llm.claude-cli-steps/fake-claude-code-was-terminated)
