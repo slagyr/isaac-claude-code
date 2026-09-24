@@ -40,3 +40,6 @@ Feature: The mcp bridge relays Claude Code's MCP lines to the turn's listener (i
     And session "mcp-sess" has transcript not matching:
       | type     | name      |
       | toolCall | exec__run |
+
+  Scenario: the module contributes no CLI command — the bridge is internal plumbing, never an operator-facing subcommand (isaac-1q9m)
+    Then the claude-code manifest declares no :isaac/cli commands

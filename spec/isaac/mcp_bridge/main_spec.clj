@@ -49,9 +49,9 @@
         (should= -32001 (get-in response [:error :code]))
         (should= "unauthorized" (get-in response [:error :message])))))
 
-  (it "declares the mcp-bridge command hosted"
+  (it "is not wired as an isaac/cli command — the driver invokes it by namespace, never as a subcommand (isaac-1q9m)"
     (let [manifest (edn/read-string (slurp "src/isaac-manifest.edn"))]
-      (should= true (get-in manifest [:isaac/cli :mcp-bridge :hosted]))))
+      (should-not-contain :isaac/cli manifest)))
 
   #_{:clj-kondo/ignore [:unresolved-symbol]}
   (around [example]

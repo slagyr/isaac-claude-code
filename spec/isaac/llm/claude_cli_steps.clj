@@ -611,6 +611,10 @@
                       (re-pattern (str cell)))]
         (g/should (re-find pattern argv))))))
 
+(defn claude-code-manifest-declares-no-cli-commands []
+  (let [manifest (edn/read-string (slurp "src/isaac-manifest.edn"))]
+    (g/should-not-include :isaac/cli manifest)))
+
 (defn fake-claude-code-was-terminated []
   (session-steps/await-turn!)
   (g/should (claude-cli/fake-cli-terminated?)))
@@ -651,6 +655,8 @@
 (defthen "the fake Claude Code received no bare stdin lines" isaac.llm.claude-cli-steps/fake-claude-code-received-no-bare-stdin-lines)
 (defthen "the MCP config handed to the fake Claude Code names server {name:string} running:"
   isaac.llm.claude-cli-steps/mcp-config-names-server-running)
+(defthen "the claude-code manifest declares no :isaac/cli commands"
+  isaac.llm.claude-cli-steps/claude-code-manifest-declares-no-cli-commands)
 (defthen "the fake Claude Code was terminated" isaac.llm.claude-cli-steps/fake-claude-code-was-terminated)
 (defthen "the fake Claude Code was invoked with:" isaac.llm.claude-cli-steps/fake-claude-code-invoked-with)
 (defthen "the fake Claude Code was invoked exactly once" isaac.llm.claude-cli-steps/fake-claude-code-invoked-exactly-once)

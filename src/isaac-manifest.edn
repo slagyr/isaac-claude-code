@@ -1,12 +1,6 @@
 {:id      :isaac.provider.claude-code
- :version "0.1.18"
+ :version "0.1.19"
  :factory isaac.module.protocol/module
-
- :isaac/cli
- {:mcp-bridge {:usage     "mcp-bridge --turn ID --url URL"
-               :summary   "stdio MCP server relaying to a process-owned listener"
-               :namespace isaac.mcp-bridge.main
-               :hosted    true}}
 
  :isaac.agent/llm-api
  {:claude-cli {:factory isaac.llm.api.claude-cli/make}}
