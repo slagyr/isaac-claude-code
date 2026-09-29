@@ -509,7 +509,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | type    | message.role | message.content |
       | message | assistant    | mcp-loop-ok     |
 
-  @wip
   Scenario: a driven turn reports context size from its first cycle (isaac-g71i, isaac-6ef2)
     The last provider response is the turn's final answer, so its usage is
     that cycle's own prompt size. The session gauge is the first cycle: the
@@ -532,7 +531,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | name | last-input-tokens | turn-input-tokens |
       | main | 260               | 580               |
 
-  @wip
   Scenario: replayed tool cycles stamp once, and a figure above the window is not the gauge (isaac-8cur, isaac-6ef2)
     A CLI that reports its tool calls only in the final result leaves the driver
     to replay them as cycles after the fact. Those cycles never met the model.
@@ -561,7 +559,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | main | 1200              |
     And the log has 0 entries with event ":session/stamp-implausible"
 
-  @wip
   Scenario: the gauge is the first request's prompt size, not the result's turn total (isaac-6ef2)
     The real CLI (Claude Code 2.1.282, captured 2026-09-29) puts each request's
     own usage on its assistant message and the SUM of those prompt sizes on the

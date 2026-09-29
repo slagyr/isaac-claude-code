@@ -89,6 +89,41 @@
         (should= 580 (:prompt-tokens (:usage result)))
         (should= [[:start 1] [:end 1] [:start 2] [:end 2]] @on-cycle))))
 
+  (it "names the first request as the gauge and keeps the last cycle on the response (isaac-6ef2)"
+    (sut/set-fake-cli!
+      [{:cycle 1 :kind "tool_use" :payload "{\"name\":\"exec__run\",\"input\":{\"command\":\"echo hi\"}}"}
+       {:cycle 1 :kind "usage" :payload "{\"input_tokens\":200,\"cache_read_input_tokens\":50,\"cache_creation_input_tokens\":10}"}
+       {:cycle 2 :kind "text" :payload "hi came back"}
+       {:cycle 2 :kind "usage" :payload "{\"input_tokens\":260,\"cache_read_input_tokens\":60,\"cache_creation_input_tokens\":0}"}
+       {:cycle 2 :kind "result_usage" :payload "{\"input_tokens\":460,\"cache_read_input_tokens\":110,\"cache_creation_input_tokens\":10}"}])
+    (let [api    (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+          result (tool-loop/run
+                   (fn [req] (api/chat api req))
+                   (fn [req _resp _tcs _trs] (:messages req))
+                   {:model "sonnet" :messages [{:role "user" :content "run it"}]}
+                   (fn [_name _args] "hi\n")
+                   {:api api})]
+      (should= 320 (get-in result [:response :usage :prompt-tokens]))
+      (should= 60 (get-in result [:response :usage :cache-read-tokens]))
+      (should= 260 (:gauge-prompt-tokens result))
+      (should= 580 (:prompt-tokens (:usage result)))))
+
+  (it "does not take a result total above the window as the response or the gauge (isaac-6ef2)"
+    (sut/set-fake-cli!
+      [{:cycle 1 :kind "text" :payload "both done"}
+       {:cycle 1 :kind "usage" :payload "{\"input_tokens\":1200}"}
+       {:cycle 1 :kind "result_usage" :payload "{\"input_tokens\":802832}"}])
+    (let [api    (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+          result (tool-loop/run
+                   (fn [req] (api/chat api req))
+                   (fn [req _resp _tcs _trs] (:messages req))
+                   {:model "sonnet" :messages [{:role "user" :content "twice"}]}
+                   (fn [_name _args] "ok")
+                   {:api api})]
+      (should= 1200 (get-in result [:response :usage :prompt-tokens]))
+      (should= 1200 (:gauge-prompt-tokens result))
+      (should= 1200 (:prompt-tokens (:usage result)))))
+
   (it "still folds cache into turn token-counts when the global driver was cleared after make"
     (sut/set-fake-cli!
       [{:cycle 1 :kind "tool_use" :payload "{\"name\":\"exec__run\",\"input\":{\"command\":\"echo hi\"}}"}

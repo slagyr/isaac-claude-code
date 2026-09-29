@@ -305,6 +305,25 @@
       (should= 10 (:prompt-tokens (:usage res)))
       (should= 2 (:output-tokens (:usage res))))))
 
+(describe "scripted Claude Code usage (isaac-6ef2)"
+  (it "reports each request on its assistant message and cumulative spend on the result"
+    (let [script [{:cycle 1 :kind "tool_use" :payload "{\"name\":\"exec__run\",\"input\":{}}"}
+                  {:cycle 1 :kind "usage" :payload "{\"input_tokens\":10}"}
+                  {:cycle 2 :kind "text" :payload "done"}
+                  {:cycle 2 :kind "usage" :payload "{\"input_tokens\":20}"}]
+          events (#'sut/script-events script)]
+      (should= [10 20] (mapv #(get-in % [:message :usage :input_tokens])
+                             (filter #(= "assistant" (:type %)) events)))
+      (should= 30 (get-in (last events) [:usage :input_tokens]))))
+
+  (it "honors an explicit result total instead of summing the assistant requests"
+    (let [events (#'sut/script-events [{:cycle 1 :kind "text" :payload "done"}
+                                       {:cycle 1 :kind "usage" :payload "{\"input_tokens\":1200}"}
+                                       {:cycle 1 :kind "result_usage" :payload "{\"input_tokens\":802832}"}])]
+      (should= 1200 (get-in (first (filter #(= "assistant" (:type %)) events))
+                            [:message :usage :input_tokens]))
+      (should= 802832 (get-in (last events) [:usage :input_tokens])))))
+
 (describe "claude-cli persisted transcript usage (isaac-l70j)"
   (marigold.agent/with-manifest)
 

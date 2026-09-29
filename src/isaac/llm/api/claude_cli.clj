@@ -543,7 +543,7 @@
       (filterv #(= 1 (:cycle %)) script))))
 
 (defn- parse-payload [kind payload]
-  (if (and (#{"tool_use" "usage" "mcp_status"} kind)
+  (if (and (#{"tool_use" "usage" "result_usage" "mcp_status"} kind)
            (string? payload)
            (str/starts-with? (str/trim payload) "{"))
     (try (json/parse-string payload true)
@@ -567,6 +567,9 @@
                            rows)
         usage        (some #(when (= "usage" (:kind %))
                               (parse-payload "usage" (:payload %)))
+                           rows)
+        result-usage (some #(when (= "result_usage" (:kind %))
+                              (parse-payload "result_usage" (:payload %)))
                            rows)
         mcp-status   (some #(when (= "mcp_status" (:kind %))
                               (parse-payload "mcp_status" (:payload %)))
@@ -593,7 +596,8 @@
                               text-deltas)
                          [{:type    "message"
                            :message {:role    "assistant"
-                                     :content [{:type "text" :text (or text joined)}]}}]
+                                     :content [{:type "text" :text (or text joined)}]
+                                     :usage   (or usage {})}}]
                          (when text
                            [{:type    "assistant"
                              :message {:role    "assistant"
@@ -602,7 +606,7 @@
                         :is_error    false
                         :stop_reason "end_turn"
                         :result      (or result-text text joined)
-                        :usage       (or usage {})}})
+                        :usage       (or result-usage usage {})}})
 
       :else
       (let [tool-blocks (mapv (fn [p]
@@ -623,10 +627,10 @@
                               thinking)
                          (when (seq content)
                            [{:type    "assistant"
-                             :message {:content content}}]))
+                             :message {:content content :usage (or usage {})}}]))
          :result-event {:type   "result"
                         :result (or result-text text "")
-                        :usage  (or usage {})}}))))
+                        :usage  (or result-usage usage {})}}))))
 
 (defn- cycle-events [rows]
   (let [{:keys [init body result-event]} (cycle-block-events rows)]
@@ -635,24 +639,34 @@
 (defn- script-cycle-ns [script]
   (->> script (keep :cycle) distinct sort vec))
 
-(defn- script-events
-  "Emit every scripted cycle in one process. Intermediate cycles omit the result
-   event so parse-stream-json-response sees a single result at the end."
+(defn- scripted-result-usage
+  "The CLI's result usage is cumulative spend. A scripted result_usage row is
+   that figure; otherwise it is the sum of the per-request usage rows."
   [script]
-  (let [ns* (or (not-empty (script-cycle-ns script)) [1])]
+  (or (some #(when (= "result_usage" (:kind %))
+               (parse-payload "result_usage" (:payload %)))
+            script)
+      (reduce (fn [total row]
+                (if (= "usage" (:kind row))
+                  (merge-with + total (parse-payload "usage" (:payload row)))
+                  total))
+              {}
+              script)))
+
+(defn- script-events
+  "Emit each request's usage on its assistant message and the turn's spend on
+   the single final result, as the CLI does for a multi-cycle turn."
+  [script]
+  (let [ns*          (or (not-empty (script-cycle-ns script)) [1])
+        result-usage (scripted-result-usage script)]
     (mapcat
       (fn [n]
         (let [rows                             (cycle-rows script n)
-              {:keys [init body result-event]} (cycle-block-events rows)
-              last?                            (= n (last ns*))
-              usage                            (:usage result-event)
-              body*                            (if (and (not last?) usage (seq body))
-                                                 (concat (butlast (vec body))
-                                                         [(assoc (last (vec body)) :usage usage)])
-                                                 body)]
+              {:keys [init body result-event]} (cycle-block-events rows)]
           (concat (when (and init (= n (first ns*))) [init])
-                  body*
-                  (when last? [result-event]))))
+                  body
+                  (when (= n (last ns*))
+                    [(assoc result-event :usage result-usage)]))))
       ns*)))
 
 (defn- event-tool-uses [evt]
@@ -680,23 +694,18 @@
               rows                             (cycle-rows script n)
               {:keys [init body result-event]} (cycle-block-events rows)
               last?                            (= n (last ns*))
-              usage                            (:usage result-event)
-              body*                            (if (and (not last?) usage (seq body))
-                                                 (concat (butlast (vec body))
-                                                         [(assoc (last (vec body)) :usage usage)])
-                                                 body)
               init*                            (when (and init (= n (first ns*))) [init])
               tcs                              (mapv (fn [b]
                                                        {:id        (or (:id b) (str (java.util.UUID/randomUUID)))
                                                         :name      (isaac-tool-name (:name b))
                                                         :arguments (or (:input b) (:arguments b) {})
                                                         :raw       b})
-                                                     (mapcat event-tool-uses body*))
+                                                     (mapcat event-tool-uses body))
               aside                            (some #(when (= "text" (:kind %)) (:payload %)) rows)
               hook                             @on-driven-tool-cycle*]
           (when (and hook (seq tcs) (not @tools-in-result-only?*))
             (hook :before aside tcs))
-          (doseq [evt body*
+          (doseq [evt body
                   b   (event-tool-uses evt)]
             (when-let [f @drive-tool-fn*]
               (try
@@ -705,8 +714,10 @@
           (when (and hook (seq tcs) (not @tools-in-result-only?*))
             (hook :after aside tcs))
           (let [tail (when (or last? @terminated?*)
-                       [(if last? result-event {:type "result" :result "" :usage (or usage {})})])
-                acc* (concat acc init* body* tail)]
+                       [(if last?
+                          (assoc result-event :usage (scripted-result-usage script))
+                          {:type "result" :result "" :usage {}})])
+                acc* (concat acc init* body tail)]
             (if (or last? @terminated?*)
               acc*
               (recur (rest remaining) acc*))))))))
@@ -895,9 +906,14 @@
       (if (contains? u :prompt-tokens) u (parse-cli-usage u)))))
 
 (defn- stream-cycle-usages
-  "Each completed cycle's usage, in stream order."
+  "Each request's usage, in stream order. The result event is the turn's
+   spend, not another request, so it counts only when no message reported
+   usage of its own (isaac-6ef2)."
   [events]
-  (vec (keep event-usage events)))
+  (let [requests (vec (keep event-usage (remove result-event? events)))]
+    (if (seq requests)
+      requests
+      (vec (keep event-usage (filter result-event? events))))))
 
 (defn- sum-usages [usages]
   (reduce (fn [total usage]
@@ -1122,8 +1138,6 @@
         asides       (atom [])
         cycle-text   (atom [])
         reasoning    (atom [])
-        usage        (atom (zero-usage))
-        cycle-usages (atom [])
         saw-delta?   (atom false)
         result-text* (atom nil)
         flush-cycle! (fn [has-tools?]
@@ -1153,24 +1167,22 @@
             (flush-cycle! has-tools?))))
       (when-let [tcs (content-tool-calls (get-in event [:content]))]
         (swap! tool-calls into tcs))
-      (when-let [u (event-usage event)]
-        (swap! cycle-usages conj u)
-        (reset! usage u))
       (when (result-event? event)
         (flush-cycle! false)
         (when (and (not (result-error? event))
                    (seq (str (:result event))))
           (reset! result-text* (str (:result event))))))
     (flush-cycle! false)
-    (let [text  (or (not-empty @result-text*) (str/join @texts) "")
-          tcs   @tool-calls
-          think (str/join @reasoning)]
+    (let [text   (or (not-empty @result-text*) (str/join @texts) "")
+          tcs    @tool-calls
+          think  (str/join @reasoning)
+          usages (stream-cycle-usages events)]
       (cond-> {:content      text
                :model        model
                :stop-reason  :end-turn
                :tool-calls   tcs
-               :usage        @usage
-               :cycle-usages @cycle-usages}
+               :usage        (or (last usages) (zero-usage))
+               :cycle-usages usages}
         (not (str/blank? think)) (assoc :reasoning {:summary think})
         (seq @asides) (assoc :asides @asides)))))
 
@@ -1274,11 +1286,18 @@
                                                       [tc]
                                                       (get asides i)))
                       (fire-start!)))
-                  (let [final (cycle-response response [] nil)]
+                  (let [final (cycle-response response [] nil)
+                        gauge (:prompt-tokens (first usages))]
                     (fire-on-cycle! on-cycle :end @cycle-n* final)
-                    {:response     final
-                     :tool-calls   tool-calls
-                     :usage        turn-usage}))))))))
+                    ;; The response keeps the last cycle. The gauge is the first
+                    ;; request, which is the prompt the next Isaac turn repeats
+                    ;; (isaac-6ef2). A missing or empty cycle list leaves the
+                    ;; gauge unset so the agent keeps today's response stamp.
+                    (cond-> {:response   final
+                             :tool-calls tool-calls
+                             :usage      turn-usage}
+                      (and (number? gauge) (pos? gauge))
+                      (assoc :gauge-prompt-tokens gauge))))))))))
     (finally
       (reset! drive-tool-fn* nil)
       (reset! on-driven-tool-cycle* nil))))
