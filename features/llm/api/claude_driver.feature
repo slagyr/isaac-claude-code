@@ -37,7 +37,7 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | name | crew    |
       | main | thinker |
 
-  Scenario: a turn with one tool call persists the pair, the reply, and the final cycle's usage
+  Scenario: a turn with one tool call persists the pair, the reply, and the first cycle as the gauge
     Given a fake Claude Code on the path scripted with:
       | cycle | kind     | payload                                                              |
       | 1     | tool_use | {"name":"exec__run","input":{"command":"echo hi"}}                  |
@@ -53,7 +53,7 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | message    | assistant    | hi came back    |           |
     And the following sessions match:
       | name | last-input-tokens | turn-input-tokens |
-      | main | 320               | 580               |
+      | main | 260               | 580               |
     And the log has entries matching:
       | event             | provider | driver   |
       | :turn/loop-driver | claude-code | provider |
@@ -291,7 +291,7 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
     Then the response is "all done"
     And the following sessions match:
       | name | last-input-tokens | turn-input-tokens |
-      | main | 370               | 950               |
+      | main | 260               | 950               |
 
   Scenario: stdin carries stream-json user envelopes, never bare role/content lines (isaac-6z4r)
     The real CLI (2.1.236) ignores a bare {"role":…,"content":…} line, reads
