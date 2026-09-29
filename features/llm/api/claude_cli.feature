@@ -250,7 +250,6 @@ Feature: Claude subscription provider via CLI shell-out
       | #index | type    | message.role | message.usage.prompt-tokens | message.usage.output-tokens |
       | -1     | message | assistant    | 0                          | 0                           |
 
-  @wip
   Scenario: CLAUDE_CODE_OAUTH_TOKEN from .env is forwarded to the claude subprocess
     Given the isaac .env file contains:
       """
@@ -260,13 +259,12 @@ Feature: Claude subscription provider via CLI shell-out
     When the user sends "hi" on session "main"
     Then the response is "ok"
     And the claude binary was invoked exactly once with:
-      | arg                                             | value |
-      | --print                                         |       |
-      | --output-format                                 | json  |
-      | --model                                         | sonnet|
-      | (env CLAUDE_CODE_OAUTH_TOKEN is marigold-oauth) |       |
+      | arg                                        | value |
+      | --print                                    |       |
+      | --output-format                            | json  |
+      | --model                                    | sonnet|
+      | (env CLAUDE_CODE_OAUTH_TOKEN=marigold-oauth) |     |
 
-  @wip
   Scenario: an unlisted .env secret is not forwarded to the claude subprocess
     Given the isaac .env file contains:
       """
@@ -277,14 +275,13 @@ Feature: Claude subscription provider via CLI shell-out
     When the user sends "hi" on session "main"
     Then the response is "ok"
     And the claude binary was invoked exactly once with:
-      | arg                                             | value |
-      | --print                                         |       |
-      | --output-format                                 | json  |
-      | --model                                         | sonnet|
-      | (env CLAUDE_CODE_OAUTH_TOKEN is marigold-oauth) |       |
-      | (no env LONGWAVE_DISCORD_TOKEN)                 |       |
+      | arg                                          | value |
+      | --print                                      |       |
+      | --output-format                              | json  |
+      | --model                                      | sonnet|
+      | (env CLAUDE_CODE_OAUTH_TOKEN=marigold-oauth) |       |
+      | (no LONGWAVE_DISCORD_TOKEN in env)           |       |
 
-  @wip
   Scenario: a name listed in forward-env is forwarded to the claude subprocess
     Given the isaac EDN file "config/providers/claude.edn" exists with:
       | path        | value                                       |
@@ -299,14 +296,13 @@ Feature: Claude subscription provider via CLI shell-out
     When the user sends "hi" on session "main"
     Then the response is "ok"
     And the claude binary was invoked exactly once with:
-      | arg                                             | value |
-      | --print                                         |       |
-      | --output-format                                 | json  |
-      | --model                                         | sonnet|
-      | (env CLAUDE_CODE_OAUTH_TOKEN is marigold-oauth) |       |
-      | (env SKYBEAM_TOKEN is skybeam-secret)           |       |
+      | arg                                          | value |
+      | --print                                      |       |
+      | --output-format                              | json  |
+      | --model                                      | sonnet|
+      | (env CLAUDE_CODE_OAUTH_TOKEN=marigold-oauth) |       |
+      | (env SKYBEAM_TOKEN=skybeam-secret)           |       |
 
-  @wip
   Scenario: ANTHROPIC_API_KEY is stripped even when listed in forward-env
     Given the isaac EDN file "config/providers/claude.edn" exists with:
       | path        | value                                           |
@@ -321,12 +317,42 @@ Feature: Claude subscription provider via CLI shell-out
     When the user sends "hi" on session "main"
     Then the response is "ok"
     And the claude binary was invoked exactly once with:
-      | arg                                             | value |
-      | --print                                         |       |
-      | --output-format                                 | json  |
-      | --model                                         | sonnet|
-      | (env CLAUDE_CODE_OAUTH_TOKEN is marigold-oauth) |       |
-      | (no ANTHROPIC_API_KEY in env)                   |       |
+      | arg                                          | value |
+      | --print                                      |       |
+      | --output-format                              | json  |
+      | --model                                      | sonnet|
+      | (env CLAUDE_CODE_OAUTH_TOKEN=marigold-oauth) |       |
+      | (no ANTHROPIC_API_KEY in env)                |       |
+
+  Scenario: an empty forward-env list forwards no named secrets
+    Given the isaac EDN file "config/providers/claude.edn" exists with:
+      | path        | value |
+      | command     | claude |
+      | forward-env | []    |
+    And the isaac .env file contains:
+      """
+      CLAUDE_CODE_OAUTH_TOKEN=marigold-oauth
+      """
+    And the claude binary is stubbed to return "ok"
+    When the user sends "hi" on session "main"
+    Then the response is "ok"
+    And the claude binary was invoked exactly once with:
+      | arg                                | value |
+      | --print                            |       |
+      | --output-format                    | json  |
+      | --model                            | sonnet|
+      | (no CLAUDE_CODE_OAUTH_TOKEN in env) |      |
+    And the log has no entries matching:
+      | event                       |
+      | :claude/oauth-token-missing |
+
+  Scenario: a missing CLAUDE_CODE_OAUTH_TOKEN is warned once when the provider is built
+    Given the claude binary is stubbed to return "ok"
+    When the user sends "hi" on session "main"
+    Then the response is "ok"
+    And the log has exactly 1 entries matching:
+      | level | event                       | message                           |
+      | :warn | :claude/oauth-token-missing | no token will be passed to claude |
 
   # --- isaac-jkx7: tool-call syntax drift on the fence path ------------------
   # The contract is <tool_call>{json}</tool_call>. Models drift: Claude's native

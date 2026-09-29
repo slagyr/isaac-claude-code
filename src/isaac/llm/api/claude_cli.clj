@@ -4,6 +4,7 @@
     [cheshire.core :as json]
     [clojure.string :as str]
     [isaac.bridge.cancellation :as bridge-cancel]
+    [isaac.config.env :as env]
     [isaac.llm.api.protocol :as api]
     [isaac.llm.followup :as followup]
     [isaac.llm.mcp-listener :as mcp-listener]
@@ -16,6 +17,9 @@
 
 (defonce ^:private stub-state* (atom nil))
 (defonce ^:private invocations* (atom []))
+;; Starts clear so the first real provider build can warn. Spec hooks set it
+;; so make stays quiet; feature stubs clear it again.
+(defonce ^:private oauth-token-warned?* (atom false))
 
 (defn- record-invocation! [invocation]
   (swap! invocations* conj invocation))
@@ -31,7 +35,11 @@
   (reset! stub-state* f))
 
 (defn clear-stub! []
-  (reset! stub-state* nil))
+  (reset! stub-state* nil)
+  (reset! oauth-token-warned?* true))
+
+(defn reset-oauth-token-warning! []
+  (reset! oauth-token-warned?* false))
 
 (defn clear-invocations! []
   (reset! invocations* []))
@@ -58,7 +66,7 @@
   [:drives-tool-loop? :command :extra-args :extraArgs
    :stream-non-tool-turns :streamNonToolTurns
    :stream-supports-tool-calls :streamSupportsToolCalls
-   :api :auth :env])
+   :api :auth :env :forward-env :forwardEnv])
 
 (defn- full-cfg? [cfg]
   (or (contains? cfg :drives-tool-loop?)
@@ -95,7 +103,8 @@
   (reset! last-mcp-config* nil)
   (reset! drive-tool-fn* nil)
   (reset! on-driven-tool-cycle* nil)
-  (reset! tools-in-result-only?* false))
+  (reset! tools-in-result-only?* false)
+  (reset! oauth-token-warned?* true))
 
 (defn report-tools-in-result-only!
   "Make the fake CLI withhold its live per-tool-call cycle hook, as the real
@@ -419,6 +428,9 @@
 (defn- command-path [cfg]
   (or (:command cfg) "claude"))
 
+(def ^:private oauth-token-env "CLAUDE_CODE_OAUTH_TOKEN")
+(def ^:private default-forward-env [oauth-token-env])
+
 (defn- config-env
   "A provider's :env as plain strings. EDN may hand us keyword keys."
   [cfg]
@@ -427,15 +439,49 @@
              {}
              (or (:env cfg) {})))
 
+(defn- env-name [name]
+  (cond
+    (keyword? name) (clojure.core/name name)
+    (string? name)  name
+    (nil? name)     nil
+    :else           (str name)))
+
+(defn- forward-names [cfg]
+  (let [names (or (:forward-env cfg) (:forwardEnv cfg))]
+    (if (nil? names) default-forward-env names)))
+
+(defn- forwarded-env [cfg]
+  (into {}
+        (keep (fn [name]
+                (let [k (env-name name)
+                      v (when k (env/env k))]
+                  (when (and k
+                             (not= k "ANTHROPIC_API_KEY")
+                             (string? v)
+                             (not (str/blank? v)))
+                    [k v]))))
+        (forward-names cfg)))
+
 (defn- subprocess-env
-  "The server's environment, minus ANTHROPIC_API_KEY, with the provider's own
-   :env merged over it. :env is how two claude-code providers hold two
-   subscriptions: CLAUDE_CONFIG_DIR isolates the CLI's login, not merely its
-   settings (isaac-12fo). The key stays stripped after the merge."
+  "The server's environment, minus ANTHROPIC_API_KEY, plus named values from
+   isaac.config.env/env (:forward-env; default CLAUDE_CODE_OAUTH_TOKEN). The
+   provider's :env map is a literal overlay on top (CLAUDE_CONFIG_DIR for a
+   second subscription, isaac-12fo). ANTHROPIC_API_KEY stays stripped after
+   both merges. A missing or blank name is omitted (isaac-1awj)."
   [cfg]
   (-> (into {} (.environment (ProcessBuilder. [])))
+      (merge (forwarded-env cfg))
       (merge (config-env cfg))
       (dissoc "ANTHROPIC_API_KEY")))
+
+(defn- warn-missing-oauth-token! [provider-name cfg]
+  (when (and (some #(= oauth-token-env (env-name %)) (forward-names cfg))
+             (str/blank? (env/env oauth-token-env))
+             (compare-and-set! oauth-token-warned?* false true))
+    (log/warn :claude/oauth-token-missing
+              :provider provider-name
+              :name oauth-token-env
+              :message "no token will be passed to claude")))
 
 (defn- write-mcp-config!
   "The MCP config Claude Code reads: an HTTP server naming this turn's own
@@ -1411,6 +1457,7 @@
 
 (defn make [name cfg]
   (let [cfg (driven-cfg cfg)]
+    (warn-missing-oauth-token! name cfg)
     (ensure-driver! cfg)
     (->ClaudeCliAPI name cfg)))
 

@@ -24,4 +24,9 @@
                       {:type        :map
                        :description "Environment for the spawned CLI, merged over the inherited one. Set CLAUDE_CONFIG_DIR to give this provider its own subscription login."
                        :key-spec    {:type :keyword}
-                       :value-spec  {:type :string}}}}}}
+                       :value-spec  {:type :string}}
+                      :forward-env
+                      {:type        :seq
+                       :spec        {:type :string}
+                       :default     ["CLAUDE_CODE_OAUTH_TOKEN"]
+                       :description "Names copied from the Isaac environment into the claude process. A missing or blank value is omitted. ANTHROPIC_API_KEY is never copied. An empty list copies none."}}}}}}

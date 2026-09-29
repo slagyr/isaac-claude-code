@@ -157,7 +157,8 @@
   (declare-module!)
   (g/dissoc! :feature-config)
   (claude-cli/clear-invocations!)
-  (claude-cli/set-stub! f))
+  (claude-cli/set-stub! f)
+  (claude-cli/reset-oauth-token-warning!))
 
 (defn- json-result-out [text & [{:keys [usage]}]]
   (json/generate-string
@@ -403,6 +404,12 @@
 (defn anthropic-api-key-unset []
   (g/assoc! :anthropic-api-key-cleared? true))
 
+(defn isaac-env-file-contains [content]
+  (let [path (str (or (g/get :root) "/isaac-state") "/.env")
+        fs*  (mem-fs)]
+    (fs/mkdirs fs* (fs/parent path))
+    (fs/spit fs* path (str/trim content))))
+
 (g/before-scenario
   (fn []
     (providers/register! "claude-code" {:api                        "claude-cli"
@@ -423,6 +430,8 @@
 ;; endregion ^^^^^ Supporting steps ^^^^^
 
 ;; region ----- Routing -----
+
+(defgiven "the isaac .env file contains:" isaac.llm.claude-cli-steps/isaac-env-file-contains)
 
 (defgiven #"the claude binary is stubbed to return \"([^\"]+)\"" isaac.llm.claude-cli-steps/claude-binary-stubbed-return)
 
