@@ -504,6 +504,15 @@
       (should-be-nil (:error response))
       (should= "the log says: You've hit your session limit" (:content response))))
 
+  (it "returns the reply when the transcript says Not logged in and the CLI exited clean (isaac-benp)"
+    (sut/set-fake-cli!
+      [{:cycle 1 :kind "text" :payload "The docs say: Not logged in · Please run /login"}])
+    (let [api      (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+          response (api/chat api {:model "sonnet" :messages [{:role "user" :content "go"}]})]
+      (should-be-nil (:error response))
+      (should-be-nil (:unavailable? response))
+      (should= "The docs say: Not logged in · Please run /login" (:content response))))
+
   (it "emits stream-json user envelopes on stdin, never bare role/content lines"
     (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "second"}])
     (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})]

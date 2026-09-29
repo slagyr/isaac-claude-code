@@ -368,31 +368,6 @@
    never the transcript (isaac-benp)."
   #"(?i)failed to authenticate|oauth (?:session |token )?expired|not logged in|please run\s*/login|invalid api key|not authenticated|no credentials")
 
-(defn- auth-failure? [out err]
-  (boolean (re-find auth-failure-re (str (or out "") "\n" (or err "")))))
-
-(defn- error-message [result]
-  (or (not-empty (str/trim (str (:err result))))
-      (not-empty (str/trim (str (:out result))))
-      "claude binary failed"))
-
-(defn- error-response
-  "Loud on the prompt path (:error + :message) AND classified for hail
-   defer+attention when the failure is auth ({:unavailable? true :reason :auth},
-   the provider_wall convention). (isaac-kn7y)"
-  [result]
-  (cond-> {:error :llm-error :message (error-message result)}
-    (auth-failure? (:out result) (:err result))
-    (assoc :unavailable? true :reason :auth)))
-
-(defn- failed?
-  "A run failed when the process exited nonzero OR the output is a login/auth
-   failure that the CLI otherwise reports on a zero exit (the empty-success
-   disease this bean fixes)."
-  [result]
-  (or (not (zero? (:exit result)))
-      (auth-failure? (:out result) (:err result))))
-
 ;; endregion ^^^^^ Prompt / Response ^^^^^
 
 ;; region ----- CLI Invocation -----
@@ -973,6 +948,40 @@
   (when-let [evt (last (filter result-event? events))]
     (when (result-error? evt)
       (not-empty (str/trim (str (:result evt)))))))
+
+(defn- auth-signal
+  "Stderr plus the result event's own error text. The transcript in stdout
+   is not a login failure (isaac-benp)."
+  [result]
+  (str (:err result) "\n"
+       (or (result-error-text (parse-stream-events (:out result))) "")))
+
+(defn- auth-failure? [result]
+  (boolean (re-find auth-failure-re (auth-signal result))))
+
+(defn- error-message [result]
+  (or (not-empty (str/trim (str (:err result))))
+      (not-empty (str/trim (or (result-error-text (parse-stream-events (:out result))) "")))
+      "claude binary failed"))
+
+(defn- error-response
+  "Loud on the prompt path (:error + :message) AND classified for hail
+   defer+attention when the failure is auth ({:unavailable? true :reason :auth},
+   the provider_wall convention). (isaac-kn7y). Auth is stderr or the result
+   event's error text, never the transcript (isaac-benp)."
+  [result]
+  (cond-> {:error :llm-error :message (error-message result)}
+    (auth-failure? result)
+    (assoc :unavailable? true :reason :auth)))
+
+(defn- failed?
+  "A run failed when the process exited nonzero, the result event reports
+   is_error, or stderr / that error text says the CLI is not logged in.
+   A phrase in the transcript is not a failure (isaac-benp)."
+  [result]
+  (or (not (zero? (:exit result)))
+      (result-error? (last (filter result-event? (parse-stream-events (:out result)))))
+      (auth-failure? result)))
 
 (defn- weather-kind
   "Provider weather the CLI reported for itself, in the agent's vocabulary
