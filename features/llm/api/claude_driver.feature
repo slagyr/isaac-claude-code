@@ -557,6 +557,28 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | main | 802832            |
     And the log has 0 entries with event ":session/stamp-implausible"
 
+  @wip
+  Scenario: the gauge is the last request's prompt size, not the result's turn total (isaac-6ef2)
+    The real CLI (captured 2026-09-29, 4 requests) puts each request's own
+    usage on its assistant message and the SUM over the turn on the result
+    event. Isaac read the sum as context size: yopp 2026-09-28 17:21Z stored
+    4,757,749 on a 1,000,000 window and compacted a 63,819-token transcript.
+    The result's sum is turn spend, never the gauge.
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind         | payload                                                                                 |
+      | 1     | tool_use     | {"name":"exec__run","input":{"command":"echo one"}}                                     |
+      | 1     | usage        | {"input_tokens":10,"cache_read_input_tokens":13689,"cache_creation_input_tokens":8679}  |
+      | 2     | tool_use     | {"name":"exec__run","input":{"command":"echo two"}}                                     |
+      | 2     | usage        | {"input_tokens":8,"cache_read_input_tokens":22368,"cache_creation_input_tokens":8235}   |
+      | 3     | text         | both done                                                                               |
+      | 3     | usage        | {"input_tokens":8,"cache_read_input_tokens":30603,"cache_creation_input_tokens":9154}   |
+      | 3     | result_usage | {"input_tokens":26,"cache_read_input_tokens":66660,"cache_creation_input_tokens":26068} |
+    When the user sends "twice" on session "main"
+    Then the response is "both done"
+    And the following sessions match:
+      | name | last-input-tokens | turn-input-tokens |
+      | main | 39765             | 92754             |
+
   Scenario: two claude-code providers spawn the CLI with their own environments (isaac-12fo)
     Micah holds several Claude Code subscriptions. `CLAUDE_CONFIG_DIR` isolates
     the CLI's login, not merely its settings, so a provider that carries its own
