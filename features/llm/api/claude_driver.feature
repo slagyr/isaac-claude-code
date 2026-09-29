@@ -509,7 +509,11 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | type    | message.role | message.content |
       | message | assistant    | mcp-loop-ok     |
 
-  Scenario: a driven turn reports context size from its last cycle (isaac-g71i)
+  @wip
+  Scenario: a driven turn reports context size from its first cycle (isaac-g71i, isaac-6ef2)
+    The last provider response is the turn's final answer, so its usage is
+    that cycle's own prompt size. The session gauge is the first cycle: the
+    next Isaac turn starts there, not at the last cycle (isaac-6ef2).
     Given a fake Claude Code on the path scripted with:
       | cycle | kind     | payload                                                                            |
       | 1     | tool_use | {"name":"exec__run","input":{"command":"echo hi"}}                                 |
@@ -526,7 +530,7 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | usage.cache-read-tokens | 60           |
     And the following sessions match:
       | name | last-input-tokens | turn-input-tokens |
-      | main | 320               | 580               |
+      | main | 260               | 580               |
 
   @wip
   Scenario: replayed tool cycles stamp once, and a figure above the window is not the gauge (isaac-8cur, isaac-6ef2)
