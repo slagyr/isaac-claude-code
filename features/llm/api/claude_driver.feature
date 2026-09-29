@@ -528,42 +528,44 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | name | last-input-tokens | turn-input-tokens |
       | main | 320               | 580               |
 
-  Scenario: replayed tool cycles do not each stamp the turn's prompt size (isaac-8cur)
+  @wip
+  Scenario: replayed tool cycles stamp once, and a figure above the window is not the gauge (isaac-8cur, isaac-6ef2)
     A CLI that reports its tool calls only in the final result leaves the driver
-    to replay them as cycles after the fact. Those cycles never met the model, so
-    the usage on the result belongs to the last cycle alone. Field run
-    2026-09-20 20:15:39Z (isaac-verify, opus): 27 tool calls produced 27
-    identical `:session/stamp-implausible :prompt-tokens 802832` warnings inside
-    153ms, each one re-reading the whole transcript. Only the final cycle
-    stamps, so the session carries one stamp from that cycle instead of one
-    per tool call. Since isaac-dgod a per-request stamp above the window is
-    recorded as it stands and compacts next; it is no longer "implausible".
+    to replay them as cycles after the fact. Those cycles never met the model.
+    Field run 2026-09-20 20:15:39Z (isaac-verify, opus): 27 tool calls produced 27
+    identical stamps inside 153ms, each one re-reading the whole transcript.
+    Only one stamp is written. The 802832 figure is a turn total, not a prompt
+    size (captured 2026-09-29: the result's usage is the sum of the cycles).
+    A figure above the context window is never stored as the gauge.
     Given the isaac EDN file "config/models/sub-sonnet.edn" exists with:
       | path           | value       |
       | model          | sonnet      |
       | provider       | claude-code |
       | context-window | 200000      |
     And a fake Claude Code on the path scripted with:
-      | cycle | kind     | payload                                                                            |
-      | 1     | tool_use | {"name":"exec__run","input":{"command":"echo one"}}                                |
-      | 1     | tool_use | {"name":"exec__run","input":{"command":"echo two"}}                                |
-      | 1     | text     | both done                                                                          |
-      | 1     | usage    | {"input_tokens":802832,"cache_read_input_tokens":0,"cache_creation_input_tokens":0} |
+      | cycle | kind         | payload                                                                            |
+      | 1     | tool_use     | {"name":"exec__run","input":{"command":"echo one"}}                                |
+      | 1     | tool_use     | {"name":"exec__run","input":{"command":"echo two"}}                                |
+      | 1     | text         | both done                                                                          |
+      | 1     | usage        | {"input_tokens":1200,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}  |
+      | 1     | result_usage | {"input_tokens":802832,"cache_read_input_tokens":0,"cache_creation_input_tokens":0} |
     And the fake Claude Code reports tool calls only in its final result
     When the user sends "twice" on session "main"
     Then the response is "both done"
     And the following sessions match:
       | name | last-input-tokens |
-      | main | 802832            |
+      | main | 1200              |
     And the log has 0 entries with event ":session/stamp-implausible"
 
   @wip
-  Scenario: the gauge is the last request's prompt size, not the result's turn total (isaac-6ef2)
-    The real CLI (captured 2026-09-29, 4 requests) puts each request's own
-    usage on its assistant message and the SUM over the turn on the result
-    event. Isaac read the sum as context size: yopp 2026-09-28 17:21Z stored
-    4,757,749 on a 1,000,000 window and compacted a 63,819-token transcript.
-    The result's sum is turn spend, never the gauge.
+  Scenario: the gauge is the first request's prompt size, not the result's turn total (isaac-6ef2)
+    The real CLI (Claude Code 2.1.282, captured 2026-09-29) puts each request's
+    own usage on its assistant message and the SUM of those prompt sizes on the
+    result. A two-cycle capture: assistant prompts 33466 then 33588, result
+    total 67054. The next Isaac turn starts from the first request, so the
+    gauge is that first prompt size. The result's sum is turn spend, never the
+    gauge. Yopp 2026-09-28 17:21Z stored 4,757,749 on a 1,000,000 window and
+    compacted a 63,819-token transcript.
     Given a fake Claude Code on the path scripted with:
       | cycle | kind         | payload                                                                                 |
       | 1     | tool_use     | {"name":"exec__run","input":{"command":"echo one"}}                                     |
@@ -577,7 +579,7 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
     Then the response is "both done"
     And the following sessions match:
       | name | last-input-tokens | turn-input-tokens |
-      | main | 39765             | 92754             |
+      | main | 22378             | 92754             |
 
   Scenario: two claude-code providers spawn the CLI with their own environments (isaac-12fo)
     Micah holds several Claude Code subscriptions. `CLAUDE_CONFIG_DIR` isolates
