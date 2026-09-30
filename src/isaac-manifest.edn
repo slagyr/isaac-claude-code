@@ -1,6 +1,7 @@
-{:id      :isaac.provider.claude-code
- :version "0.2.0"
- :factory isaac.module.protocol/module
+{:id       :isaac.provider.claude-code
+ :version  "0.2.0"
+ :factory  isaac.module.protocol/module
+ :handbook "isaac/llm/handbook.md"
 
  :isaac.agent/llm-api
  {:claude-cli {:factory isaac.llm.api.claude-cli/make}}
