@@ -22,7 +22,7 @@ Depends on [isaac-foundation](https://github.com/slagyr/isaac-foundation) and
 
 ## What's here
 
-- `:isaac.agent/llm-api` factory `:claude-cli` (`isaac.llm.api.claude-cli/make`).
+- `:isaac.agent/llm-api` factory `:claude-cli` (`isaac.provider.claude-code.api.claude-cli/make`).
 - Provider template `:claude-code` (command, streaming, tool-loop driver).
 - HTTP MCP route `POST /claude/turns/:id`.
 - Specs and Gherkin for the CLI provider; real-binary smoke is opt-in.
@@ -53,7 +53,7 @@ clj -M:features
 ```
 
 The real-binary smoke remains gated: `bb smoke` (or
-`spec/isaac/llm/claude_cli_real_spec.clj`).
+`spec/isaac/provider/claude_code/claude_cli_real_spec.clj`).
 
 ## Consumer coordinate
 

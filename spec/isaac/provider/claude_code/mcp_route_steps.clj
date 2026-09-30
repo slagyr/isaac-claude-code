@@ -1,21 +1,21 @@
-(ns isaac.llm.mcp-route-steps
+(ns isaac.provider.claude-code.mcp-route-steps
   (:require
     [babashka.http-client :as http]
     [cheshire.core :as json]
     [clojure.string :as str]
     [gherclj.core :as g :refer [defgiven defthen defwhen helper!]]
-    [isaac.comm.null :as null-comm]
-    [isaac.config.loader :as loader]
-    [isaac.drive.turn :as drive-turn]
-    [isaac.llm.mcp-listener :as mcp-listener]
-    [isaac.mcp.turns :as mcp-turns]
-    [isaac.nexus :as nexus]
-    [isaac.session.store.spi :as store]
-    [isaac.step-tables :as match]
-    [isaac.tool.names :as names]
-    [isaac.tool.registry :as tool-registry]))
+    [isaac.agent.comm.null :as null-comm]
+    [isaac.agent.drive.turn :as drive-turn]
+    [isaac.agent.mcp.turns :as mcp-turns]
+    [isaac.agent.session.store.spi :as store]
+    [isaac.agent.step-tables :as match]
+    [isaac.agent.tool.names :as names]
+    [isaac.agent.tool.registry :as tool-registry]
+    [isaac.foundation.config.loader :as loader]
+    [isaac.foundation.nexus :as nexus]
+    [isaac.provider.claude-code.mcp-listener :as mcp-listener]))
 
-(helper! isaac.llm.mcp-route-steps)
+(helper! isaac.provider.claude-code.mcp-route-steps)
 
 (g/after-scenario (fn []
                     (mcp-listener/stop-all!)
@@ -125,37 +125,37 @@
   (g/should= [] (:failures (match/match-object table (g/get :mcp-response)))))
 
 (defgiven "a turn {turn-id:string} is registered for session {session-key:string}"
-  isaac.llm.mcp-route-steps/turn-registered)
+  isaac.provider.claude-code.mcp-route-steps/turn-registered)
 
 (defgiven "the turn {turn-id:string} is cleared"
-  isaac.llm.mcp-route-steps/turn-cleared)
+  isaac.provider.claude-code.mcp-route-steps/turn-cleared)
 
 (defgiven "environment variable {name:string} is {value:string}"
-  isaac.llm.mcp-route-steps/environment-variable-is)
+  isaac.provider.claude-code.mcp-route-steps/environment-variable-is)
 
 (defgiven "the listener for turn {turn-id:string} is stopped"
-  isaac.llm.mcp-route-steps/turn-listener-stopped)
+  isaac.provider.claude-code.mcp-route-steps/turn-listener-stopped)
 
 (defwhen "an MCP request is posted to {path:string}:"
-  isaac.llm.mcp-route-steps/request-posted)
+  isaac.provider.claude-code.mcp-route-steps/request-posted)
 
 (defwhen "the listener for turn {turn-id:string} receives an MCP request:"
-  isaac.llm.mcp-route-steps/listener-request-posted)
+  isaac.provider.claude-code.mcp-route-steps/listener-request-posted)
 
 (defwhen "the listener for turn {turn-id:string} receives an MCP request with bearer {bearer:string}:"
-  isaac.llm.mcp-route-steps/listener-request-posted-with-bearer)
+  isaac.provider.claude-code.mcp-route-steps/listener-request-posted-with-bearer)
 
 (defwhen "a GET request is made to the listener for turn {turn-id:string}"
-  isaac.llm.mcp-route-steps/listener-get-requested)
+  isaac.provider.claude-code.mcp-route-steps/listener-get-requested)
 
 (defthen "the MCP response matches:"
-  isaac.llm.mcp-route-steps/response-matches)
+  isaac.provider.claude-code.mcp-route-steps/response-matches)
 
 (defthen "the MCP HTTP status is {int}"
-  isaac.llm.mcp-route-steps/mcp-http-status-is)
+  isaac.provider.claude-code.mcp-route-steps/mcp-http-status-is)
 
 (defthen "the MCP response body is empty"
-  isaac.llm.mcp-route-steps/mcp-response-body-is-empty)
+  isaac.provider.claude-code.mcp-route-steps/mcp-response-body-is-empty)
 
 (defthen "the MCP request fails to connect"
-  isaac.llm.mcp-route-steps/mcp-request-failed-to-connect)
+  isaac.provider.claude-code.mcp-route-steps/mcp-request-failed-to-connect)

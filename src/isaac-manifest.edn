@@ -1,15 +1,15 @@
 {:id       :isaac.provider.claude-code
  :version  "0.2.0"
- :factory  isaac.module.protocol/module
- :handbook "isaac/llm/handbook.md"
+ :factory  isaac.foundation.module.protocol/module
+ :handbook "isaac/provider/claude_code/handbook.md"
 
  :isaac.agent/llm-api
- {:claude-cli {:factory isaac.llm.api.claude-cli/make}}
+ {:claude-cli {:factory isaac.provider.claude-code.api.claude-cli/make}}
 
  :isaac.http/route
  [{:method  :post
    :path    "/claude/turns/:id"
-   :handler isaac.llm.mcp-route/handle
+   :handler isaac.provider.claude-code.mcp-route/handle
    :scope   :mcp}]
 
  :isaac.agent/provider-template

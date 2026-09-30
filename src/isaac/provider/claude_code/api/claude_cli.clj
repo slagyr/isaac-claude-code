@@ -1,17 +1,17 @@
-(ns isaac.llm.api.claude-cli
+(ns isaac.provider.claude-code.api.claude-cli
   (:require
     [babashka.process :as process]
     [cheshire.core :as json]
     [clojure.string :as str]
-    [isaac.bridge.cancellation :as bridge-cancel]
-    [isaac.config.env :as env]
-    [isaac.llm.api.protocol :as api]
-    [isaac.llm.followup :as followup]
-    [isaac.llm.mcp-listener :as mcp-listener]
-    [isaac.llm.prompt.builder :as prompt]
-    [isaac.llm.tool-loop :as tool-loop]
-    [isaac.logger :as log]
-    [isaac.mcp.turns :as mcp-turns]))
+    [isaac.agent.bridge.cancellation :as bridge-cancel]
+    [isaac.agent.llm.api.protocol :as api]
+    [isaac.agent.llm.followup :as followup]
+    [isaac.agent.llm.prompt.builder :as prompt]
+    [isaac.agent.llm.tool-loop :as tool-loop]
+    [isaac.agent.mcp.turns :as mcp-turns]
+    [isaac.foundation.config.env :as env]
+    [isaac.foundation.logger :as log]
+    [isaac.provider.claude-code.mcp-listener :as mcp-listener]))
 
 ;; region ----- Test Hooks -----
 
@@ -464,7 +464,7 @@
 
 (defn- subprocess-env
   "The server's environment, minus ANTHROPIC_API_KEY, plus named values from
-   isaac.config.env/env (:forward-env; default CLAUDE_CODE_OAUTH_TOKEN). The
+   isaac.foundation.config.env/env (:forward-env; default CLAUDE_CODE_OAUTH_TOKEN). The
    provider's :env map is a literal overlay on top (CLAUDE_CONFIG_DIR for a
    second subscription, isaac-12fo). ANTHROPIC_API_KEY stays stripped after
    both merges. A missing or blank name is omitted (isaac-1awj)."
@@ -1031,7 +1031,7 @@
 
 (defn- weather-kind
   "Provider weather the CLI reported for itself, in the agent's vocabulary
-   (isaac.drive.provider-wall): a limit is a wall, a login failure is auth."
+   (isaac.agent.drive.provider-wall): a limit is a wall, a login failure is auth."
   [text]
   (cond
     (re-find limit-failure-re text) {:error :rate-limited :reason :wall}

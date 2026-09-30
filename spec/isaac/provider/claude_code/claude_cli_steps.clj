@@ -1,20 +1,20 @@
-(ns isaac.llm.claude-cli-steps
+(ns isaac.provider.claude-code.claude-cli-steps
   (:require
     [cheshire.core :as json]
     [clojure.edn :as edn]
     [clojure.string :as str]
     [gherclj.core :as g :refer [defgiven defwhen defthen helper!]]
-    [isaac.fs :as fs]
-    [isaac.tool.tools-steps :as tools-steps]
-    [isaac.llm.api.claude-cli :as claude-cli]
-    [isaac.llm.api.protocol :as api]
-    [isaac.llm.providers :as providers]
-    [isaac.logger :as log]
-    [isaac.nexus :as nexus]
-    [isaac.session.session-steps :as session-steps]
-    [isaac.step-tables :as match]))
+    [isaac.agent.llm.api.protocol :as api]
+    [isaac.agent.llm.providers :as providers]
+    [isaac.agent.session.session-steps :as session-steps]
+    [isaac.agent.step-tables :as match]
+    [isaac.agent.tool.tools-steps :as tools-steps]
+    [isaac.foundation.fs :as fs]
+    [isaac.foundation.logger :as log]
+    [isaac.foundation.nexus :as nexus]
+    [isaac.provider.claude-code.api.claude-cli :as claude-cli]))
 
-(helper! isaac.llm.claude-cli-steps)
+(helper! isaac.provider.claude-code.claude-cli-steps)
 
 ;; region ----- Helpers -----
 
@@ -342,8 +342,8 @@
 
 (defn session-has-no-transcript-containing [name text]
   (session-steps/await-turn!)
-  (let [entries (or (try ((requiring-resolve 'isaac.session.store.spi/get-transcript)
-                          ((requiring-resolve 'isaac.session.store.spi/registered-store))
+  (let [entries (or (try ((requiring-resolve 'isaac.agent.session.store.spi/get-transcript)
+                          ((requiring-resolve 'isaac.agent.session.store.spi/registered-store))
                           name)
                          (catch Exception _ nil))
                     [])
@@ -352,8 +352,8 @@
 
 (defn session-has-no-transcript-role-containing [name role text]
   (session-steps/await-turn!)
-  (let [entries (or (try ((requiring-resolve 'isaac.session.store.spi/get-transcript)
-                          ((requiring-resolve 'isaac.session.store.spi/registered-store))
+  (let [entries (or (try ((requiring-resolve 'isaac.agent.session.store.spi/get-transcript)
+                          ((requiring-resolve 'isaac.agent.session.store.spi/registered-store))
                           name)
                          (catch Exception _ nil))
                     [])
@@ -431,74 +431,74 @@
 
 ;; region ----- Routing -----
 
-(defgiven "the isaac .env file contains:" isaac.llm.claude-cli-steps/isaac-env-file-contains)
+(defgiven "the isaac .env file contains:" isaac.provider.claude-code.claude-cli-steps/isaac-env-file-contains)
 
-(defgiven #"the claude binary is stubbed to return \"([^\"]+)\"" isaac.llm.claude-cli-steps/claude-binary-stubbed-return)
+(defgiven #"the claude binary is stubbed to return \"([^\"]+)\"" isaac.provider.claude-code.claude-cli-steps/claude-binary-stubbed-return)
 
 (defgiven #"the claude binary at \"([^\"]+)\" is stubbed to return \"([^\"]+)\""
-  isaac.llm.claude-cli-steps/claude-binary-at-stubbed-return)
+  isaac.provider.claude-code.claude-cli-steps/claude-binary-at-stubbed-return)
 
-(defgiven #"the claude binary is stubbed to stream (.+)" isaac.llm.claude-cli-steps/claude-binary-stubbed-stream)
+(defgiven #"the claude binary is stubbed to stream (.+)" isaac.provider.claude-code.claude-cli-steps/claude-binary-stubbed-stream)
 
 (defgiven #"the claude binary is stubbed to return json with usage \"([^\"]+)\" and tokens (\d+) and (\d+)"
-  isaac.llm.claude-cli-steps/claude-binary-stubbed-json-with-usage)
+  isaac.provider.claude-code.claude-cli-steps/claude-binary-stubbed-json-with-usage)
 
 (defgiven #"the claude binary is stubbed to return json without usage \"([^\"]+)\""
-  isaac.llm.claude-cli-steps/claude-binary-stubbed-json-no-usage)
+  isaac.provider.claude-code.claude-cli-steps/claude-binary-stubbed-json-no-usage)
 
 (defgiven #"the claude binary is stubbed to stream-json with terminal usage (.+)"
-  isaac.llm.claude-cli-steps/claude-binary-stubbed-stream-with-usage)
+  isaac.provider.claude-code.claude-cli-steps/claude-binary-stubbed-stream-with-usage)
 
 (defgiven "the claude binary is stubbed to first return tool call text for exec, then \"done\""
-  isaac.llm.claude-cli-steps/claude-binary-stubbed-tool-then-text)
+  isaac.provider.claude-code.claude-cli-steps/claude-binary-stubbed-tool-then-text)
 
 (defgiven "the claude binary is stubbed to return in sequence:"
-  isaac.llm.claude-cli-steps/claude-binary-stubbed-sequence)
+  isaac.provider.claude-code.claude-cli-steps/claude-binary-stubbed-sequence)
 
 (defgiven #"the claude binary is stubbed to fail with exit code (\d+) and message \"([^\"]+)\""
-  isaac.llm.claude-cli-steps/claude-binary-stubbed-fail)
+  isaac.provider.claude-code.claude-cli-steps/claude-binary-stubbed-fail)
 
-(defthen "the claude binary was invoked exactly once with:" isaac.llm.claude-cli-steps/claude-binary-invoked-once-with)
+(defthen "the claude binary was invoked exactly once with:" isaac.provider.claude-code.claude-cli-steps/claude-binary-invoked-once-with)
 
 (defthen #"the claude binary at \"([^\"]+)\" was invoked exactly once with:"
-  isaac.llm.claude-cli-steps/claude-binary-at-invoked-once-with)
+  isaac.provider.claude-code.claude-cli-steps/claude-binary-at-invoked-once-with)
 
 (defn claude-binary-invoked-twice []
   (claude-binary-invoked-exactly "2"))
 
-(defthen "the claude binary was invoked exactly twice" isaac.llm.claude-cli-steps/claude-binary-invoked-twice)
+(defthen "the claude binary was invoked exactly twice" isaac.provider.claude-code.claude-cli-steps/claude-binary-invoked-twice)
 
 (defthen "the second invocation included the tool result serialized in the prompt text"
-  isaac.llm.claude-cli-steps/second-invocation-includes-tool-result)
+  isaac.provider.claude-code.claude-cli-steps/second-invocation-includes-tool-result)
 
-(defthen #"the response is \"([^\"]+)\"" isaac.llm.claude-cli-steps/response-is)
+(defthen #"the response is \"([^\"]+)\"" isaac.provider.claude-code.claude-cli-steps/response-is)
 
-(defthen #"the response streams as (.+)" isaac.llm.claude-cli-steps/response-streams-as)
+(defthen #"the response streams as (.+)" isaac.provider.claude-code.claude-cli-steps/response-streams-as)
 
-(defgiven #"the crew has tools: (.+)" isaac.llm.claude-cli-steps/crew-has-tools)
+(defgiven #"the crew has tools: (.+)" isaac.provider.claude-code.claude-cli-steps/crew-has-tools)
 
-(defthen "the exec tool is executed" isaac.llm.claude-cli-steps/exec-tool-executed)
+(defthen "the exec tool is executed" isaac.provider.claude-code.claude-cli-steps/exec-tool-executed)
 
 (defthen "the claude binary was invoked exactly {n:int} times"
-  isaac.llm.claude-cli-steps/claude-binary-invoked-exactly)
+  isaac.provider.claude-code.claude-cli-steps/claude-binary-invoked-exactly)
 
 ;; Agent session_steps now registers the same phrase; keep the local helper
 ;; for await-turn! but do not re-register the Then (gherclj classify-step).
 
 (defthen "the exec tool ran commands in order:"
-  isaac.llm.claude-cli-steps/exec-tool-ran-commands)
+  isaac.provider.claude-code.claude-cli-steps/exec-tool-ran-commands)
 
 (defthen "the second invocation's prompt text contains {text:string}"
-  isaac.llm.claude-cli-steps/second-invocation-prompt-contains)
+  isaac.provider.claude-code.claude-cli-steps/second-invocation-prompt-contains)
 
 (defthen "session {name:string} has no transcript entry containing {text:string}"
-  isaac.llm.claude-cli-steps/session-has-no-transcript-containing)
+  isaac.provider.claude-code.claude-cli-steps/session-has-no-transcript-containing)
 
 (defthen "session {name:string} has no transcript entry with role {role:string} containing {text:string}"
-  isaac.llm.claude-cli-steps/session-has-no-transcript-role-containing)
+  isaac.provider.claude-code.claude-cli-steps/session-has-no-transcript-role-containing)
 
 (defthen "the turn ends with error {kw:string}"
-  isaac.llm.claude-cli-steps/turn-ends-with-error)
+  isaac.provider.claude-code.claude-cli-steps/turn-ends-with-error)
 
 (defn hail-delivery-bound-to-session [name]
   (g/assoc! :hail-delivery {:id "hail-jkx7" :bound-session name :attempts 0}))
@@ -522,25 +522,25 @@
     (g/should= n (:attempts delivery))))
 
 (defgiven "a hail delivery is bound to session {name:string}"
-  isaac.llm.claude-cli-steps/hail-delivery-bound-to-session)
+  isaac.provider.claude-code.claude-cli-steps/hail-delivery-bound-to-session)
 
 (defwhen "the hail delivery runs its turn"
-  isaac.llm.claude-cli-steps/hail-delivery-runs-its-turn)
+  isaac.provider.claude-code.claude-cli-steps/hail-delivery-runs-its-turn)
 
 (defthen "the delivery is deferred with attempts {n:int}"
-  isaac.llm.claude-cli-steps/delivery-is-deferred-with-attempts)
+  isaac.provider.claude-code.claude-cli-steps/delivery-is-deferred-with-attempts)
 
 (defthen "an error is reported indicating the claude binary failed"
-  isaac.llm.claude-cli-steps/claude-binary-error-reported)
+  isaac.provider.claude-code.claude-cli-steps/claude-binary-error-reported)
 
-(defthen #"the error message contains \"([^\"]+)\"" isaac.llm.claude-cli-steps/error-message-contains)
+(defthen #"the error message contains \"([^\"]+)\"" isaac.provider.claude-code.claude-cli-steps/error-message-contains)
 
-(defthen "the error is classified as auth-unavailable" isaac.llm.claude-cli-steps/error-classified-auth)
+(defthen "the error is classified as auth-unavailable" isaac.provider.claude-code.claude-cli-steps/error-classified-auth)
 
 (defgiven #"the file \"([^\"]+)\" exists with the subscription login"
-  isaac.llm.claude-cli-steps/credentials-file-exists)
+  isaac.provider.claude-code.claude-cli-steps/credentials-file-exists)
 
-(defgiven "ANTHROPIC_API_KEY is not set in the environment" isaac.llm.claude-cli-steps/anthropic-api-key-unset)
+(defgiven "ANTHROPIC_API_KEY is not set in the environment" isaac.provider.claude-code.claude-cli-steps/anthropic-api-key-unset)
 
 ;; region ----- Fake Claude Code (isaac-5xn7) -----
 
@@ -650,24 +650,24 @@
                                                          (when (:cancelled? result) :cancelled))))]
     (g/should= expected actual)))
 
-(defgiven "a fake Claude Code on the path scripted with:" isaac.llm.claude-cli-steps/fake-claude-code-scripted)
-(defthen "the log has {int} entries with event {string}" isaac.llm.claude-cli-steps/log-has-n-entries-with-event
+(defgiven "a fake Claude Code on the path scripted with:" isaac.provider.claude-code.claude-cli-steps/fake-claude-code-scripted)
+(defthen "the log has {int} entries with event {string}" isaac.provider.claude-code.claude-cli-steps/log-has-n-entries-with-event
   "Counts log entries by :event — the repetition itself is the defect (isaac-8cur).")
 
-(defgiven "the fake Claude Code reports tool calls only in its final result" isaac.llm.claude-cli-steps/fake-claude-code-reports-tools-in-result-only)
-(defgiven "the fake Claude Code fails MCP initialization" isaac.llm.claude-cli-steps/fake-claude-code-fails-mcp-init)
+(defgiven "the fake Claude Code reports tool calls only in its final result" isaac.provider.claude-code.claude-cli-steps/fake-claude-code-reports-tools-in-result-only)
+(defgiven "the fake Claude Code fails MCP initialization" isaac.provider.claude-code.claude-cli-steps/fake-claude-code-fails-mcp-init)
 (defgiven "the fake Claude Code exits {code:int} before streaming with stderr {text:string}"
-  isaac.llm.claude-cli-steps/fake-claude-code-exits-before-streaming)
-(defthen "the fake Claude Code received on stdin:" isaac.llm.claude-cli-steps/fake-claude-code-received-on-stdin)
-(defthen "the fake Claude Code received no bare stdin lines" isaac.llm.claude-cli-steps/fake-claude-code-received-no-bare-stdin-lines)
+  isaac.provider.claude-code.claude-cli-steps/fake-claude-code-exits-before-streaming)
+(defthen "the fake Claude Code received on stdin:" isaac.provider.claude-code.claude-cli-steps/fake-claude-code-received-on-stdin)
+(defthen "the fake Claude Code received no bare stdin lines" isaac.provider.claude-code.claude-cli-steps/fake-claude-code-received-no-bare-stdin-lines)
 (defthen "the MCP config handed to the fake Claude Code names server {name:string} as HTTP:"
-  isaac.llm.claude-cli-steps/mcp-config-names-http-server)
+  isaac.provider.claude-code.claude-cli-steps/mcp-config-names-http-server)
 (defthen "the claude-code manifest declares no :isaac/cli commands"
-  isaac.llm.claude-cli-steps/claude-code-manifest-declares-no-cli-commands)
-(defthen "the fake Claude Code was terminated" isaac.llm.claude-cli-steps/fake-claude-code-was-terminated)
-(defthen "the fake Claude Code was invoked with:" isaac.llm.claude-cli-steps/fake-claude-code-invoked-with)
-(defthen "the fake Claude Code was invoked exactly once" isaac.llm.claude-cli-steps/fake-claude-code-invoked-exactly-once)
-(defthen "the turn result is:" isaac.llm.claude-cli-steps/turn-result-table)
+  isaac.provider.claude-code.claude-cli-steps/claude-code-manifest-declares-no-cli-commands)
+(defthen "the fake Claude Code was terminated" isaac.provider.claude-code.claude-cli-steps/fake-claude-code-was-terminated)
+(defthen "the fake Claude Code was invoked with:" isaac.provider.claude-code.claude-cli-steps/fake-claude-code-invoked-with)
+(defthen "the fake Claude Code was invoked exactly once" isaac.provider.claude-code.claude-cli-steps/fake-claude-code-invoked-exactly-once)
+(defthen "the turn result is:" isaac.provider.claude-code.claude-cli-steps/turn-result-table)
 
 ;; endregion ^^^^^ Fake Claude Code ^^^^^
 

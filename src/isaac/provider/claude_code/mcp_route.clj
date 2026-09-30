@@ -1,11 +1,11 @@
-(ns isaac.llm.mcp-route
+(ns isaac.provider.claude-code.mcp-route
   "HTTP surface for Claude Code's per-turn MCP registry."
   (:require
     [cheshire.core :as json]
     [clojure.java.io :as io]))
 
 (defn handle-turn [turn-id message]
-  ((requiring-resolve 'isaac.mcp.turns/handle) turn-id message))
+  ((requiring-resolve 'isaac.agent.mcp.turns/handle) turn-id message))
 
 (defn- read-body [body]
   (cond

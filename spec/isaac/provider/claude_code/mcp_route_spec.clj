@@ -1,8 +1,8 @@
-(ns isaac.llm.mcp-route-spec
+(ns isaac.provider.claude-code.mcp-route-spec
   (:require
     [cheshire.core :as json]
     [clojure.edn :as edn]
-    [isaac.llm.mcp-route :as sut]
+    [isaac.provider.claude-code.mcp-route :as sut]
     [speclj.core :refer :all]))
 
 (describe "Claude MCP turn route"
@@ -11,7 +11,7 @@
     (let [manifest (edn/read-string (slurp "src/isaac-manifest.edn"))]
       (should= [{:method  :post
                  :path    "/claude/turns/:id"
-                 :handler 'isaac.llm.mcp-route/handle
+                 :handler 'isaac.provider.claude-code.mcp-route/handle
                  :scope   :mcp}]
                (:isaac.http/route manifest))))
 

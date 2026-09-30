@@ -174,7 +174,7 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
     Then the response is "fenced"
     And the log has entries matching:
       | event                   | provider | reason           | stderr                           |
-      | :claude/driver-fallback | claude   | cli-start-failed | #"stream-json requires --verbose" |
+      | :claude/driver-fallback | claude   | cli-start-failed | #"(?s).*stream-json requires --verbose.*" |
     And the fake Claude Code was invoked with:
       | arg              | value       |
       | --output-format  | stream-json |

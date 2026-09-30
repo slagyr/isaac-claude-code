@@ -1,4 +1,4 @@
-(ns isaac.llm.claude-cli-real-spec
+(ns isaac.provider.claude-code.claude-cli-real-spec
   "Spec-vs-reality smoke (isaac-kn7y / isaac-ozv9 / isaac-l70j): executes the ACTUAL claude
    binary. Stubs prove spec-conformance; only this proves spec-CORRECTNESS.
 
@@ -8,8 +8,8 @@
   (:require
     [babashka.process :as process]
     [clojure.string :as str]
-    [isaac.llm.api.claude-cli :as sut]
-    [isaac.llm.tool-loop :as tool-loop]
+    [isaac.agent.llm.tool-loop :as tool-loop]
+    [isaac.provider.claude-code.api.claude-cli :as sut]
     [speclj.core :refer [describe it should should-not pending tags]]))
 
 (defn- enabled? []

@@ -1,11 +1,11 @@
-(ns isaac.llm.mcp-listener
+(ns isaac.provider.claude-code.mcp-listener
   "Authenticated loopback listener for one process-owned MCP turn. Claude
    Code's HTTP MCP client talks to this directly — no stdio bridge process
    sits between them (isaac-mbnb)."
   (:require
     [cheshire.core :as json]
     [clojure.java.io :as io]
-    [isaac.llm.mcp-route :as mcp-route]
+    [isaac.provider.claude-code.mcp-route :as mcp-route]
     [org.httpkit.server :as httpkit]))
 
 (defonce ^:private listeners* (atom {}))

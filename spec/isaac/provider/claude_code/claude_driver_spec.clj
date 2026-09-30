@@ -1,13 +1,13 @@
-(ns isaac.llm.claude-driver-spec
+(ns isaac.provider.claude-code.claude-driver-spec
   (:require
     [cheshire.core :as json]
     [clojure.string :as str]
-    [isaac.llm.api.claude-cli :as sut]
-    [isaac.llm.api.protocol :as api]
-    [isaac.llm.mcp-listener :as mcp-listener]
-    [isaac.llm.tool-loop :as tool-loop]
-    [isaac.logger :as log]
-    [isaac.mcp.turns :as mcp-turns]
+    [isaac.agent.llm.api.protocol :as api]
+    [isaac.agent.llm.tool-loop :as tool-loop]
+    [isaac.agent.mcp.turns :as mcp-turns]
+    [isaac.foundation.logger :as log]
+    [isaac.provider.claude-code.api.claude-cli :as sut]
+    [isaac.provider.claude-code.mcp-listener :as mcp-listener]
     [speclj.core :refer :all]))
 
 (defn- ndjson [events]

@@ -1,15 +1,15 @@
-(ns isaac.llm.claude-cli-spec
+(ns isaac.provider.claude-code.claude-cli-spec
   (:require
     [cheshire.core :as json]
     [clojure.string :as str]
-    [isaac.drive.turn :as drive-turn]
-    [isaac.fs :as fs]
-    [isaac.llm.api.claude-cli :as sut]
-    [isaac.llm.api.protocol :as api]
-    [isaac.marigold :as marigold]
-    [isaac.marigold.agent :as marigold.agent]
-    [isaac.nexus :as nexus]
-    [isaac.session.spec-helper :as session-helper]
+    [isaac.agent.drive.turn :as drive-turn]
+    [isaac.agent.llm.api.protocol :as api]
+    [isaac.agent.marigold.agent :as marigold.agent]
+    [isaac.agent.session.spec-helper :as session-helper]
+    [isaac.foundation.fs :as fs]
+    [isaac.foundation.marigold :as marigold]
+    [isaac.foundation.nexus :as nexus]
+    [isaac.provider.claude-code.api.claude-cli :as sut]
     [speclj.core :refer [around before describe it should should= should-not]]))
 
 (def ^:private transcript-test-dir marigold/home)

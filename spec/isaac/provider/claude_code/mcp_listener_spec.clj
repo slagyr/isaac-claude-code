@@ -1,10 +1,10 @@
-(ns isaac.llm.mcp-listener-spec
+(ns isaac.provider.claude-code.mcp-listener-spec
   (:require
     [babashka.http-client :as http]
     [cheshire.core :as json]
     [clojure.string :as str]
-    [isaac.llm.mcp-listener :as sut]
-    [isaac.mcp.turns :as mcp-turns]
+    [isaac.agent.mcp.turns :as mcp-turns]
+    [isaac.provider.claude-code.mcp-listener :as sut]
     [speclj.core :refer :all]))
 
 (defn- post [url nonce message]

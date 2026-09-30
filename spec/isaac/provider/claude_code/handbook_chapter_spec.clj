@@ -1,4 +1,4 @@
-(ns isaac.llm.handbook-chapter-spec
+(ns isaac.provider.claude-code.handbook-chapter-spec
   "Lint for isaac-claude-code's own handbook chapter (isaac-7i6t): every
    backtick `config:<dotted.path>` reference (no angle-bracket placeholder
    inside the path) must resolve against the composed config schema, and
@@ -12,7 +12,7 @@
 
    This module's own manifest carries no `:builtin? true` (it is a regular
    third-party module, not part of the foundation/agent core), so
-   isaac.module.discovery/builtin-index alone would never include it — that
+   isaac.foundation.module.discovery/builtin-index alone would never include it — that
    index is filtered to builtin manifests only. Composing a schema that
    actually reflects what this chapter documents (its own contributed
    :drives-tool-loop?/:env/:forward-env provider-template schema fields,
@@ -22,14 +22,14 @@
   (:require
     [clojure.java.io :as io]
     [clojure.string :as str]
-    [isaac.config.schema-compose :as schema-compose]
-    [isaac.config.schema.resolve :as schema-resolve]
-    [isaac.fs :as fs]
-    [isaac.module.discovery :as discovery]
-    [isaac.nexus :as nexus]
+    [isaac.foundation.config.schema-compose :as schema-compose]
+    [isaac.foundation.config.schema.resolve :as schema-resolve]
+    [isaac.foundation.fs :as fs]
+    [isaac.foundation.module.discovery :as discovery]
+    [isaac.foundation.nexus :as nexus]
     [speclj.core :refer :all]))
 
-(def ^:private chapter-resource "isaac/llm/handbook.md")
+(def ^:private chapter-resource "isaac/provider/claude_code/handbook.md")
 (def ^:private own-module-id :isaac.provider.claude-code)
 
 (defn- chapter-text []
@@ -37,7 +37,7 @@
 
 (defn- own-index-entry
   "This module's own {id -> entry}, found by id across every isaac-manifest.edn
-   on the classpath (isaac.module.discovery/manifest-resource) rather than
+   on the classpath (isaac.foundation.module.discovery/manifest-resource) rather than
    through the builtin-only index."
   []
   (when-let [resource (discovery/manifest-resource own-module-id)]
@@ -67,7 +67,7 @@
 (defn- known-cli-commands
   "Top-level command names contributed to the :isaac/cli berth by every
    module in `index` (builtin plus this module's own entry) — read directly
-   off each module's manifest rather than through isaac.module.berths,
+   off each module's manifest rather than through isaac.foundation.module.berths,
    whose report helpers vary across pinned foundation shas."
   [index]
   (->> (vals index)
