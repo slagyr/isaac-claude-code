@@ -74,7 +74,17 @@ build accepts, so use whatever alias or full model id your CLI recognizes.
 - **You expect `isaac auth login --provider claude-code` to do something and
   it doesn't.** This template's `auth` is `none` — Isaac never manages this
   provider's credential. Login lives entirely in the `claude` binary itself,
-  outside Isaac `[verify: exact claude CLI login subcommand]`.
+  outside Isaac: run `claude` interactively (first run) or `/login` inside an
+  already-open session to refresh the standard OAuth pair, stored under the
+  CLI's own config dir (`~/.claude/.credentials.json` on Linux; the login
+  keychain on macOS; wherever `CLAUDE_CONFIG_DIR` points when the provider
+  sets one). `claude setup-token` is the alternative for an unattended
+  deployment — it mints a long-lived token good for about a year rather than
+  the standard pair's short refresh-token window. Put it in Isaac's
+  `<root>/.env` as `CLAUDE_CODE_OAUTH_TOKEN`: this provider forwards that
+  name from `isaac.foundation.config.env/env` by default (`:forward-env`),
+  and `.env` is re-read on every config load, so no restart is needed — a
+  plain config reload picks it up.
 - **Two provider ids both say `type: claude-code` and you're not sure which
   is "the real one."** Neither is — `type` selects the template, the
   entity's own id is just a label. Check `command`/`env` on each entry, not
@@ -313,8 +323,16 @@ marker with its stamped reason (`:wall`, `:auth`, or `:silence`) and
   provider's sessions keep suspending with reason `:silence`.** Treat it as
   an expired `claude` login first — probe the binary directly (with the
   same environment Isaac gives it, including any `CLAUDE_CONFIG_DIR`) and
-  have a human re-authenticate it. `[verify: exact claude CLI re-login
-  command]`
+  have a human re-authenticate it: `claude` (first run) or `/login` inside an
+  open session re-does the standard OAuth pair, stored under the CLI's own
+  config dir (`~/.claude/.credentials.json` on Linux; the login keychain on
+  macOS). `claude setup-token` mints a long-lived `CLAUDE_CODE_OAUTH_TOKEN`
+  instead — set it in Isaac's `<root>/.env` and `subprocess-env` forwards it
+  to the CLI automatically; `.env` is re-read on each config load, so no
+  restart is needed there. A restart is only needed if the token is exported
+  directly into the server's own process environment instead (e.g. a
+  systemd `Environment=`/`EnvironmentFile=` entry) — that path isn't re-read
+  until the process itself restarts.
 - **A turn suspended with reason `:wall` and a `retry-at` in the near
   future.** That's a session/usage limit, not a login problem — nothing to
   fix; it should resume on its own once the window the CLI named reopens.
