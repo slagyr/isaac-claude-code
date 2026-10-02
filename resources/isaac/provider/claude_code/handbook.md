@@ -74,7 +74,13 @@ build accepts, so use whatever alias or full model id your CLI recognizes.
 - **You expect `isaac auth login --provider claude-code` to do something and
   it doesn't.** This template's `auth` is `none` — Isaac never manages this
   provider's credential. Login lives entirely in the `claude` binary itself,
-  outside Isaac `[verify: exact claude CLI login subcommand]`.
+  outside Isaac: run `claude` interactively (first run) or `/login` inside an
+  already-open session to refresh the standard OAuth pair in
+  `~/.claude/.credentials.json`. `claude setup-token` is the alternative for
+  an unattended deployment — it mints a long-lived token for the
+  `CLAUDE_CODE_OAUTH_TOKEN` environment variable instead of a session login,
+  good for about a year rather than the standard pair's short refresh-token
+  window.
 - **Two provider ids both say `type: claude-code` and you're not sure which
   is "the real one."** Neither is — `type` selects the template, the
   entity's own id is just a label. Check `command`/`env` on each entry, not
@@ -313,8 +319,12 @@ marker with its stamped reason (`:wall`, `:auth`, or `:silence`) and
   provider's sessions keep suspending with reason `:silence`.** Treat it as
   an expired `claude` login first — probe the binary directly (with the
   same environment Isaac gives it, including any `CLAUDE_CONFIG_DIR`) and
-  have a human re-authenticate it. `[verify: exact claude CLI re-login
-  command]`
+  have a human re-authenticate it: `claude` (first run) or `/login` inside an
+  open session re-does the standard OAuth pair; `claude setup-token` mints a
+  long-lived `CLAUDE_CODE_OAUTH_TOKEN` instead, which `subprocess-env`
+  forwards to the CLI automatically once it's set in Isaac's own process
+  environment — note that a running Isaac process won't pick up a newly set
+  env var until it is itself restarted with it present.
 - **A turn suspended with reason `:wall` and a `retry-at` in the near
   future.** That's a session/usage limit, not a login problem — nothing to
   fix; it should resume on its own once the window the CLI named reopens.
