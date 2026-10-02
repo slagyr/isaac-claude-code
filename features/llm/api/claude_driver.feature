@@ -35,7 +35,7 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | name | crew    |
       | main | thinker |
 
-  Scenario: a turn with one tool call persists the pair, the reply, and the first cycle as the gauge
+  Scenario: a turn with one tool call persists the pair, the reply, and the final cycle as the gauge
     Given a fake Claude Code on the path scripted with:
       | cycle | kind     | payload                                                              |
       | 1     | tool_use | {"name":"exec__run","input":{"command":"echo hi"}}                  |
@@ -51,7 +51,7 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | message    | assistant    | hi came back    |           |
     And the following sessions match:
       | name | last-input-tokens | turn-input-tokens |
-      | main | 260               | 580               |
+      | main | 320               | 580               |
     And the log has entries matching:
       | event             | provider | driver   |
       | :turn/loop-driver | claude-code | provider |
@@ -354,7 +354,7 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
     Then the response is "all done"
     And the following sessions match:
       | name | last-input-tokens | turn-input-tokens |
-      | main | 260               | 950               |
+      | main | 370               | 950               |
 
   Scenario: stdin carries stream-json user envelopes, never bare role/content lines (isaac-6z4r)
     The real CLI (2.1.236) ignores a bare {"role":…,"content":…} line, reads
@@ -556,10 +556,10 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | type    | message.role | message.content |
       | message | assistant    | mcp-loop-ok     |
 
-  Scenario: a driven turn reports context size from its first cycle (isaac-g71i, isaac-6ef2)
+  Scenario: a driven turn reports context size from its final cycle (isaac-g71i, isaac-o13p)
     The last provider response is the turn's final answer, so its usage is
-    that cycle's own prompt size. The session gauge is the first cycle: the
-    next Isaac turn starts there, not at the last cycle (isaac-6ef2).
+    that cycle's own prompt size. The session gauge is that same final
+    report: a valid final cycle wins over the first-cycle gauge (isaac-o13p).
     Given a fake Claude Code on the path scripted with:
       | cycle | kind     | payload                                                                            |
       | 1     | tool_use | {"name":"exec__run","input":{"command":"echo hi"}}                                 |
@@ -576,7 +576,7 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | usage.cache-read-tokens | 60           |
     And the following sessions match:
       | name | last-input-tokens | turn-input-tokens |
-      | main | 260               | 580               |
+      | main | 320               | 580               |
 
   Scenario: replayed tool cycles stamp once, and a figure above the window is not the gauge (isaac-8cur, isaac-6ef2)
     A CLI that reports its tool calls only in the final result leaves the driver
@@ -606,14 +606,14 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | main | 1200              |
     And the log has 0 entries with event ":session/stamp-implausible"
 
-  Scenario: the gauge is the first request's prompt size, not the result's turn total (isaac-6ef2)
+  Scenario: the gauge is the final request's prompt size, not the result's turn total (isaac-6ef2, isaac-o13p)
     The real CLI (Claude Code 2.1.282, captured 2026-09-29) puts each request's
     own usage on its assistant message and the SUM of those prompt sizes on the
     result. A two-cycle capture: assistant prompts 33466 then 33588, result
-    total 67054. The next Isaac turn starts from the first request, so the
-    gauge is that first prompt size. The result's sum is turn spend, never the
-    gauge. Yopp 2026-09-28 17:21Z stored 4,757,749 on a 1,000,000 window and
-    compacted a 63,819-token transcript.
+    total 67054. The result's sum is turn spend, never the gauge. The gauge is
+    the final request's own prompt size: a valid final report wins over the
+    first-cycle gauge (isaac-o13p). Yopp 2026-09-28 17:21Z stored 4,757,749 on
+    a 1,000,000 window and compacted a 63,819-token transcript.
     Given a fake Claude Code on the path scripted with:
       | cycle | kind         | payload                                                                                 |
       | 1     | tool_use     | {"name":"exec__run","input":{"command":"echo one"}}                                     |
@@ -627,7 +627,7 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
     Then the response is "both done"
     And the following sessions match:
       | name | last-input-tokens | turn-input-tokens |
-      | main | 22378             | 92754             |
+      | main | 39765             | 92754             |
 
   Scenario: two claude-code providers spawn the CLI with their own environments (isaac-12fo)
     Micah holds several Claude Code subscriptions. `CLAUDE_CONFIG_DIR` isolates
