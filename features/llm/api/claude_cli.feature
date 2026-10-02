@@ -29,7 +29,6 @@ Feature: Claude subscription provider via CLI shell-out
       | name | crew    |
       | main | thinker |
 
-  @wip
   Scenario: non-tool prompt uses raw shell-out
     Given the claude binary is stubbed to return "4"
     When the user sends "What is 2+2?" on session "main"
@@ -46,7 +45,6 @@ Feature: Claude subscription provider via CLI shell-out
       | (conversation prompt on stdin) | |
       | (user prompt does not contain soul text) | |
 
-  @wip
   Scenario: streaming response from claude subscription provider
     Given the isaac EDN file "config/providers/claude.edn" exists with:
       | path                  | value |
@@ -66,7 +64,6 @@ Feature: Claude subscription provider via CLI shell-out
       | --system-prompt          |               |
       | (conversation prompt on stdin) |      |
 
-  @wip
   Scenario: error from claude binary is reported
     Given the claude binary is stubbed to fail with exit code 1 and message "claude: boom"
     When the user sends "hi" on session "main"
@@ -80,7 +77,6 @@ Feature: Claude subscription provider via CLI shell-out
       | --no-session-persistence |       |
       | --model                  | sonnet|
 
-  @wip
   Scenario: login failure is a loud error and classifies as auth-unavailable
     Given the claude binary is stubbed to fail with exit code 1 and message "Not logged in · Please run /login"
     When the user sends "hi" on session "main"
@@ -88,7 +84,6 @@ Feature: Claude subscription provider via CLI shell-out
     And the error message contains "Please run /login"
     And the error is classified as auth-unavailable
 
-  @wip
   Scenario: claude subscription provider with custom binary path
     Given the isaac EDN file "config/providers/claude.edn" exists with:
       | path    | value              |
@@ -104,7 +99,6 @@ Feature: Claude subscription provider via CLI shell-out
       | --no-session-persistence |       |
       | --model                  | sonnet|
 
-  @wip
   Scenario: extra args from provider config are forwarded
     Given the isaac EDN file "config/providers/claude.edn" exists with:
       | path        | value         |
@@ -122,7 +116,6 @@ Feature: Claude subscription provider via CLI shell-out
       | --model                  | sonnet|
       | --foo                    | bar   |
 
-  @wip
   Scenario: full history passed each turn (Isaac controls transcript)
     Given the isaac EDN file "config/providers/claude.edn" exists with:
       | path    | value  |
@@ -152,7 +145,6 @@ Feature: Claude subscription provider via CLI shell-out
       | (stdin contains full history) | |
       | (no --continue or --resume) | |
 
-  @wip
   Scenario: claude subscription provider uses subscription login (no raw API key)
     Given the isaac EDN file "config/providers/claude.edn" exists with:
       | path    | value  |
@@ -178,7 +170,6 @@ Feature: Claude subscription provider via CLI shell-out
       | --model                  | sonnet|
       | (no ANTHROPIC_API_KEY in env) | |
 
-  @wip
   Scenario: claude subscription provider with extra args from config
     Given the isaac EDN file "config/providers/claude.edn" exists with:
       | path        | value         |
@@ -203,7 +194,6 @@ Feature: Claude subscription provider via CLI shell-out
       | --model                  | sonnet|
       | --foo                    | bar   |
 
-  @wip
   Scenario: non-stream json output records token usage on the transcript
     Given the claude binary is stubbed to return json with usage "4" and tokens 120 and 15
     When the user sends "What is 2+2?" on session "main"
@@ -215,7 +205,6 @@ Feature: Claude subscription provider via CLI shell-out
       | arg                      | value |
       | --output-format          | json  |
 
-  @wip
   Scenario: streaming stream-json records terminal usage on the transcript
     Given the isaac EDN file "config/providers/claude.edn" exists with:
       | path                  | value |
@@ -228,7 +217,6 @@ Feature: Claude subscription provider via CLI shell-out
       | #index | type    | message.role | message.usage.prompt-tokens | message.usage.output-tokens | message.usage.cache-read-tokens | message.usage.cache-write-tokens |
       | -1     | message | assistant    | 46                         | 7                           | 3                        | 1                         |
 
-  @wip
   Scenario: missing usage in json output still completes with zero usage
     Given the claude binary is stubbed to return json without usage "ok"
     When the user sends "hi" on session "main"
@@ -237,7 +225,6 @@ Feature: Claude subscription provider via CLI shell-out
       | #index | type    | message.role | message.usage.prompt-tokens | message.usage.output-tokens |
       | -1     | message | assistant    | 0                          | 0                           |
 
-  @wip
   Scenario: CLAUDE_CODE_OAUTH_TOKEN from .env is forwarded to the claude subprocess
     Given the isaac .env file contains:
       """
@@ -253,7 +240,6 @@ Feature: Claude subscription provider via CLI shell-out
       | --model                                    | sonnet|
       | (env CLAUDE_CODE_OAUTH_TOKEN=marigold-oauth) |     |
 
-  @wip
   Scenario: an unlisted .env secret is not forwarded to the claude subprocess
     Given the isaac .env file contains:
       """
@@ -271,7 +257,6 @@ Feature: Claude subscription provider via CLI shell-out
       | (env CLAUDE_CODE_OAUTH_TOKEN=marigold-oauth) |       |
       | (no LONGWAVE_DISCORD_TOKEN in env)           |       |
 
-  @wip
   Scenario: a name listed in forward-env is forwarded to the claude subprocess
     Given the isaac EDN file "config/providers/claude.edn" exists with:
       | path        | value                                       |
@@ -293,7 +278,6 @@ Feature: Claude subscription provider via CLI shell-out
       | (env CLAUDE_CODE_OAUTH_TOKEN=marigold-oauth) |       |
       | (env SKYBEAM_TOKEN=skybeam-secret)           |       |
 
-  @wip
   Scenario: ANTHROPIC_API_KEY is stripped even when listed in forward-env
     Given the isaac EDN file "config/providers/claude.edn" exists with:
       | path        | value                                           |
@@ -315,7 +299,6 @@ Feature: Claude subscription provider via CLI shell-out
       | (env CLAUDE_CODE_OAUTH_TOKEN=marigold-oauth) |       |
       | (no ANTHROPIC_API_KEY in env)                |       |
 
-  @wip
   Scenario: an empty forward-env list forwards no named secrets
     Given the isaac EDN file "config/providers/claude.edn" exists with:
       | path        | value |
@@ -338,7 +321,6 @@ Feature: Claude subscription provider via CLI shell-out
       | event                       |
       | :claude/oauth-token-missing |
 
-  @wip
   Scenario: a missing CLAUDE_CODE_OAUTH_TOKEN is warned once when the provider is built
     Given the claude binary is stubbed to return "ok"
     When the user sends "hi" on session "main"

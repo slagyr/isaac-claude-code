@@ -49,13 +49,11 @@
 
 (defonce ^:private fake-cli* (atom nil))
 (defonce ^:private fake-cycle* (atom 0))
-(defonce ^:private fail-mcp-init?* (atom false))
+(defonce ^:private fake-mcp-failure?* (atom false))
 (defonce ^:private exit-before-stream* (atom nil))
 (defonce ^:private live-process* (atom nil))
 (defonce ^:private terminated?* (atom false))
 (defonce ^:private stdin-messages* (atom []))
-(defonce ^:private fallback-logged?* (atom false))
-(defonce ^:private last-driven?* (atom false))
 (defonce ^:private last-cfg* (atom {}))
 (defonce ^:private last-mcp-config* (atom nil))
 (defonce ^:private drive-tool-fn* (atom nil))
@@ -63,42 +61,38 @@
 (defonce ^:private tools-in-result-only?* (atom false))
 
 (def ^:private remembered-keys
-  [:drives-tool-loop? :command :extra-args :extraArgs
+  [:command :extra-args :extraArgs
    :stream-non-tool-turns :streamNonToolTurns
    :stream-supports-tool-calls :streamSupportsToolCalls
    :api :auth :env :forward-env :forwardEnv])
 
 (defn- full-cfg? [cfg]
-  (or (contains? cfg :drives-tool-loop?)
-      (contains? cfg :command)
+  (or (contains? cfg :command)
       (contains? cfg :api)
       (contains? cfg :extra-args)
       (contains? cfg :extraArgs)
       (contains? cfg :stream-non-tool-turns)
       (contains? cfg :streamNonToolTurns)))
 
-(defn- remember-driven! [cfg]
+(defn- remember-config! [cfg]
   ;; augment-provider remakes the Api with only session keys, dropping
-  ;; :drives-tool-loop?, :command, :extra-args, and :stream-non-tool-turns.
+  ;; :command, :extra-args, and :stream-non-tool-turns.
   ;; Full configs update the memory; session-only remakes reuse it.
   (when (full-cfg? cfg)
-    (reset! last-cfg* (select-keys cfg remembered-keys))
-    (reset! last-driven?* (boolean (:drives-tool-loop? cfg)))))
+    (reset! last-cfg* (select-keys cfg remembered-keys))))
 
-(defn- driven-cfg [cfg]
-  (remember-driven! cfg)
+(defn- remembered-config [cfg]
+  (remember-config! cfg)
   (merge @last-cfg* cfg))
 
 (defn clear-fake-cli! []
   (reset! fake-cli* nil)
   (reset! fake-cycle* 0)
-  (reset! fail-mcp-init?* false)
+  (reset! fake-mcp-failure?* false)
   (reset! exit-before-stream* nil)
   (reset! live-process* nil)
   (reset! terminated?* false)
   (reset! stdin-messages* [])
-  (reset! fallback-logged?* false)
-  (reset! last-driven?* false)
   (reset! last-cfg* {})
   (reset! last-mcp-config* nil)
   (reset! drive-tool-fn* nil)
@@ -113,15 +107,12 @@
   []
   (reset! tools-in-result-only?* true))
 
-(defn fail-mcp-init! []
-  (reset! fail-mcp-init?* true)
-  (reset! fallback-logged?* false)
-  (log/info :claude/driver-fallback :provider "claude" :reason :mcp-init)
-  (reset! fallback-logged?* true))
+(defn simulate-mcp-init-failure! []
+  (reset! fake-mcp-failure?* true))
 
 (defn exit-before-streaming! [exit-code stderr]
   (reset! exit-before-stream* {:exit (or exit-code 1) :err (or stderr "")})
-  (reset! fallback-logged?* false))
+  (reset! fake-mcp-failure?* false))
 
 (defn fake-cli-terminated? []
   @terminated?*)
@@ -162,7 +153,8 @@
   (reset! fake-cycle* 0)
   (reset! stdin-messages* [])
   (reset! terminated?* false)
-  (reset! last-mcp-config* nil))
+  (reset! last-mcp-config* nil)
+  (reset! fake-mcp-failure?* false))
 
 (defn last-mcp-config []
   @last-mcp-config*)
@@ -170,12 +162,6 @@
 ;; endregion ^^^^^ Test Hooks ^^^^^
 
 ;; region ----- Prompt / Response -----
-
-(def ^:private tool-call-open "<tool_call>")
-(def ^:private tool-call-close "</tool_call>")
-
-(def tool-protocol-contract
-  "You have no built-in tools. To act, emit <tool_call>{\"name\":\"<tool>\",\"arguments\":{...}}</tool_call> exactly as written; the harness executes it and returns results in a follow-up turn.")
 
 (defn- content->text [content]
   (cond
@@ -203,14 +189,11 @@
     (str "## Tools\n" (json/generate-string (:tools request)))))
 
 (defn- build-system-prompt
-  "Fence path teaches the textual <tool_call> protocol. Driven path must not —
-   tools are native MCP (isaac-lrvb)."
-  [request driven?]
+  "Tools are native MCP; never teach a textual tool-call protocol."
+  [request]
   (str/join "\n\n"
             (remove str/blank?
                     [(system-text request)
-                     (when (and (seq (:tools request)) (not driven?))
-                       tool-protocol-contract)
                      (tool-defs-text request)])))
 
 (defn- conversation->prompt-text [request]
@@ -243,64 +226,6 @@
              (map json/generate-string)
              (str/join "\n"))))))
 
-(defn- tool-call-text [name args]
-  (str tool-call-open (json/generate-string {:name name :arguments args}) tool-call-close))
-
-(defn- ->tool-call [parsed]
-  {:id        (str (java.util.UUID/randomUUID))
-   :name      (:name parsed)
-   :arguments (or (:arguments parsed) {})
-   :raw       parsed})
-
-(defn- parse-argument [value]
-  (try
-    (json/parse-string value true)
-    (catch Exception _ value)))
-
-(defn- parse-invoke [block]
-  (when-let [[_ name body] (re-matches #"(?s)<invoke\s+name=\"([^\"]+)\">(.*)</invoke>" block)]
-    (let [parameters (re-seq #"(?s)<parameter\s+name=\"([^\"]+)\">(.*?)</parameter>" body)]
-      (when (and (not (str/blank? body)) (empty? parameters))
-        (throw (ex-info "malformed invoke parameters" {:block block})))
-      (->tool-call
-        {:name      name
-         :arguments (into {}
-                          (map (fn [[_ parameter value]]
-                                 [(keyword parameter) (parse-argument value)]))
-                          parameters)}))))
-
-(def ^:private call-block-re
-  #"(?s)<tool_call>.*?</tool_call>|<invoke\s+name=\"[^\"]+\">.*?</invoke>|```\s*\{\"name\".*?```")
-
-(defn- parse-call-block [block]
-  (cond
-    (str/starts-with? block tool-call-open)
-    (let [payload (subs block (count tool-call-open) (- (count block) (count tool-call-close)))]
-      (->tool-call (json/parse-string payload true)))
-
-    (str/starts-with? block "<invoke")
-    (or (parse-invoke block)
-        (throw (ex-info "malformed invoke block" {:block block})))
-
-    (str/starts-with? block "```")
-    (-> block (subs 3 (- (count block) 3)) str/trim (json/parse-string true) ->tool-call)))
-
-(def ^:private call-shape-re
-  #"(?s)<tool_call|<invoke(?:\s|>)|<function_calls|```\s*\{\"name\"")
-
-(defn- parse-tool-calls [text]
-  (let [text   (or text "")
-        blocks (re-seq call-block-re text)
-        calls  (mapv parse-call-block blocks)]
-    (when (and (re-find call-shape-re text) (empty? blocks))
-      (throw (ex-info "unparsed tool call shape" {:text text})))
-    calls))
-
-(defn- visible-text [text]
-  (if-let [[block] (re-find call-block-re (or text ""))]
-    (subs text 0 (str/index-of text block))
-    text))
-
 (defn- zero-usage []
   {:prompt-tokens 0 :output-tokens 0})
 
@@ -322,36 +247,6 @@
     (not (map? usage)) (zero-usage)
     (contains? usage :prompt-tokens) usage
     :else (or (parse-cli-usage usage) (zero-usage))))
-
-(def ^:dynamic *protocol-attempts* 0)
-(def protocol-retry-after-ms 60000)
-
-(defn- protocol-error [message model usage]
-  (let [attempt (inc *protocol-attempts*)]
-    (if (>= attempt 2)
-      (log/error :claude-cli/tool-protocol :attempt attempt)
-      (log/warn :claude-cli/tool-syntax-drift :attempt attempt))
-    {:error          :tool-protocol
-     :message        message
-     :model          model
-     :usage          (normalize-usage usage)
-     :unavailable?   true
-     :reason         :tool-protocol
-     :retry-after-ms protocol-retry-after-ms}))
-
-(defn- success-response [model text usage]
-  (try
-    (let [tool-calls (parse-tool-calls text)
-          content    (visible-text text)
-          usage*     (normalize-usage usage)]
-      {:content     content
-       :model       model
-       :stop-reason (if (seq tool-calls) :tool-use :end-turn)
-       :tool-calls  tool-calls
-       :usage       usage*})
-    (catch Exception e
-      (protocol-error (str "tool call could not be parsed: " (.getMessage e))
-                      model usage))))
 
 (defn- parse-json-output [out]
   (try
@@ -384,24 +279,18 @@
 (def ^:private STREAM-JSON-NEEDS-VERBOSE
   "Error: When using --print, --output-format=stream-json requires --verbose")
 
-(defn- driven? [cfg]
-  (boolean (and (:drives-tool-loop? cfg) (not @fail-mcp-init?*))))
+(defn- driven? [request]
+  (boolean (seq (:tools request))))
 
-(defn- maybe-log-fallback! [_cfg]
-  (when (and @fail-mcp-init?*
-             (compare-and-set! fallback-logged?* false true))
-    (log/info :claude/driver-fallback :provider "claude" :reason :mcp-init)))
-
-(defn- log-title-side-call! [cfg]
+(defn- log-title-side-call! []
   ;; khgy: Claude Code has no documented flag to skip the per-invocation
   ;; title-generation side call. --no-session-persistence still writes an
   ;; ai-title stub (anthropics/claude-code#49565, #52555). Accept the cost
   ;; and log it so operators can see it per driven turn.
-  (when (driven? cfg)
-    (log/info :claude/title-side-call
-              :provider "claude"
-              :found false
-              :note "no CLI switch; --no-session-persistence still emits ai-title")))
+  (log/info :claude/title-side-call
+            :provider "claude"
+            :found false
+            :note "no CLI switch; --no-session-persistence still emits ai-title"))
 
 (defn- flag-args [streaming? driven? mcp-config-path]
   ;; `--tools ""` disables ALL built-in tools (the real CLI flag; the prior
@@ -528,8 +417,8 @@
     (try (mcp-turns/clear! turn-id) (catch Exception _))))
 
 (defn- build-argv [cfg request streaming? mcp-config-path]
-  (let [driven  (driven? cfg)
-        system  (build-system-prompt request driven)
+  (let [driven  (driven? request)
+        system  (build-system-prompt request)
         base    (into [(command-path cfg)]
                       (concat (extra-args cfg)
                               (flag-args streaming? driven mcp-config-path)
@@ -781,7 +670,7 @@
       (stream-json-without-verbose? arg-map)
       {:exit 1 :out "" :err STREAM-JSON-NEEDS-VERBOSE}
 
-      (and (not json-out?) @exit-before-stream*)
+      (and mcp-config? @exit-before-stream*)
       (let [{:keys [exit err]} @exit-before-stream*]
         {:exit (or exit 1) :out "" :err (or err "")})
 
@@ -835,7 +724,7 @@
          :err  (:err result)}))))
 
 (defn- request-stdin [cfg request]
-  (if (driven? cfg)
+  (if (driven? request)
     (conversation->stream-json request)
     (conversation->prompt-text request)))
 
@@ -912,9 +801,6 @@
            (and (= "connected" (isaac-status init))
                 (zero? (mcp-tool-count init))))))
 
-(defn- reply-contains-fence? [result]
-  (str/includes? (str (:out result)) tool-call-open))
-
 (defn- event-usage
   "The usage an event reports, or nil when it reports none. An empty usage map
    is silence, not zero: a cycle that says nothing must not overwrite what the
@@ -964,28 +850,6 @@
               :cache-write-tokens cache-write
               :output-tokens (:output-tokens sums)
               :events (event-type-counts events))))
-
-(defn- driving? [cfg]
-  ;; Once the fence fallback trips, the CLI runs with no MCP tools and writes
-  ;; its tool calls as text for Isaac to parse. Isaac's own loop has to execute
-  ;; them, so the provider must stop claiming the loop (isaac-zz6d).
-  (boolean (and (:drives-tool-loop? cfg) (not @fail-mcp-init?*))))
-
-(defn- effective-cfg [cfg]
-  (cond-> cfg
-    (contains? cfg :drives-tool-loop?) (assoc :drives-tool-loop? (driving? cfg))))
-
-(defn- ensure-driver! [cfg]
-  (if (driving? cfg)
-    (tool-loop/install-provider-driver! claude-loop-driver)
-    (tool-loop/clear-provider-driver!)))
-
-(defn- fence-retry! [cfg request]
-  (let [argv   (build-argv cfg request false nil)
-        prompt (request-stdin cfg request)
-        env    (subprocess-env cfg)]
-    (record-invocation! {:argv argv :env env :in prompt})
-    (run-process! argv env prompt)))
 
 (defn- result-error-text
   "The CLI's own error signal: the text of a result event that reports
@@ -1038,9 +902,7 @@
     (re-find cli-auth-failure-re text) {:error :auth-failed :reason :auth}))
 
 (defn- cli-weather
-  "Classify a run as provider weather when the CLI's own error signal says a
-   limit or a login failure ended it. A limit hit mid-turn is weather, not a
-   missing MCP server, so it never takes the fence fallback (isaac-2sxf)."
+  "Classify the CLI's own error signal as provider weather."
   [result events]
   (let [text (str/join "\n" (remove str/blank?
                                     [(str (:err result)) (result-error-text events)]))]
@@ -1062,69 +924,60 @@
     (or (and result-evt (result-error? result-evt))
         (nil? result-evt))))
 
-(defn- fence-fallback! [cfg request result reason]
-  (when (compare-and-set! fallback-logged?* false true)
-    (log/info :claude/driver-fallback
-              :provider "claude"
-              :reason reason
-              :stderr (let [events (parse-stream-events (:out result))
-                            result-evt (last (filter result-event? events))]
-                        (or (not-empty (stderr-head (:err result)))
-                            (when result-evt (str (:result result-evt)))
-                            ""))))
-  (reset! fail-mcp-init?* true)
-  (reset! exit-before-stream* {:exit (:exit result) :err (:err result)})
-  (fence-retry! cfg request))
+(defn- mcp-weather [result events]
+  (let [usages (stream-cycle-usages events)]
+    {:error          :mcp-unavailable
+     :reason         :mcp-unavailable
+     :unavailable?   true
+     :message        (or (not-empty (stderr-head (:err result)))
+                         (result-error-text events)
+                         "Claude Code MCP unavailable")
+     :usage          (sum-usages usages)
+     :cycle-usages   usages}))
+
+(defn- mcp-init-weather [exception]
+  {:error        :mcp-unavailable
+   :reason       :mcp-unavailable
+   :unavailable? true
+   :message      (.getMessage exception)})
 
 (defn- invoke! [cfg request streaming?]
-  (ensure-driver! cfg)
-  (let [streaming? (and streaming? (not @fail-mcp-init?*) (not @exit-before-stream*))
-        mcp        (when (driven? cfg)
-                     (register-mcp-turn! cfg request))
-        argv       (build-argv cfg request streaming? (:path mcp))
-        prompt     (request-stdin cfg request)
-        env        (subprocess-env cfg)]
-    (maybe-log-fallback! cfg)
-    (log-title-side-call! cfg)
-    (install-cancel-hook! cfg)
-    (capture-stdin! prompt)
-    (record-invocation! {:argv argv :env env :in prompt})
+  (let [driven (driven? request)
+        mcp    (try
+                 (when driven (register-mcp-turn! cfg request))
+                 (catch Exception e {:init-error e}))]
     (try
-      (let [result  (run-process! argv env prompt)
-            events  (parse-stream-events (:out result))
-            init    (init-event events)
-            driven  (and (:drives-tool-loop? cfg) (not @fail-mcp-init?*))
-            weather (when driven (cli-weather result events))]
-        (when driven
-          (when init (log-mcp-status! init))
-          (log-driver-exit! result events))
-        (cond
-          ;; A seat that ran out of window, or a login that expired, is provider
-          ;; weather: the drive parks and resumes it. Re-running without MCP
-          ;; would only hit the same wall and answer with the CLI's init event
-          ;; (isaac-2sxf).
-          weather
-          (assoc result :weather weather)
-
-          (and (:drives-tool-loop? cfg)
-               (not @fail-mcp-init?*)
-               (cli-start-failed? result))
-          (fence-fallback! cfg request result :cli-start-failed)
-
-          (and (:drives-tool-loop? cfg)
-               (not @fail-mcp-init?*)
-               (cli-error? result))
-          (fence-fallback! cfg request result :cli-error)
-
-          (and (:drives-tool-loop? cfg)
-               (not @fail-mcp-init?*)
-               (or (mcp-failed? init request)
-                   (reply-contains-fence? result)))
-          (fence-fallback! cfg request result :mcp-failed)
-
-          :else result))
+      (if-let [error (:init-error mcp)]
+        {:weather (mcp-init-weather error)}
+        (let [argv  (build-argv cfg request streaming? (:path mcp))
+              input (request-stdin cfg request)
+              env   (subprocess-env cfg)]
+          (when driven (log-title-side-call!))
+          (install-cancel-hook! cfg)
+          (capture-stdin! input)
+          (record-invocation! {:argv argv :env env :in input})
+          (let [result  (if (and driven @fake-mcp-failure?*)
+                          {:exit 1 :out "" :err "Claude Code MCP unavailable"}
+                          (run-process! argv env input))
+                events  (parse-stream-events (:out result))
+                init    (init-event events)
+                weather (cli-weather result events)]
+            (when driven
+              (when init (log-mcp-status! init))
+              (log-driver-exit! result events))
+            (cond
+              weather (assoc result :weather weather)
+              (and driven (or (cli-start-failed? result)
+                              (cli-error? result)
+                              (mcp-failed? init request)))
+              (assoc result :weather (mcp-weather result events))
+              :else result))))
+      (catch Exception e
+        (if driven
+          {:weather (mcp-init-weather e)}
+          (throw e)))
       (finally
-        (when mcp (cleanup-mcp-turn! mcp))))))
+        (when (:turn-id mcp) (cleanup-mcp-turn! mcp))))))
 
 (defn- stream-json-delta-text [event]
   (let [event (unwrap-stream-event event)
@@ -1361,46 +1214,25 @@
 
 ;; region ----- Public API -----
 
-(defn- corrective-request [request result]
-  (update request :messages (fnil conj [])
-          {:role    "user"
-           :content (str "Your previous tool call could not be parsed. "
-                         "Emit <tool_call>{\"name\":\"<tool>\",\"arguments\":{...}}</tool_call> exactly as written. "
-                         (:message result))}))
-
 (defn- chat* [request _provider-name cfg]
-  (ensure-driver! cfg)
-  (let [result (invoke! cfg request false)]
+  (let [result (invoke! cfg request (driven? request))]
     (cond
       (:weather result) (weather-response (:weather result) (:model request))
       (failed? result) (error-response result)
-      (driven? cfg) (parse-stream-json-response (:out result) (:model request))
+      (driven? request) (parse-stream-json-response (:out result) (:model request))
       :else (let [{:keys [text usage]} (parse-json-output (:out result))]
-              (success-response (:model request) text usage)))))
-
-(defn- retry-protocol [request provider-name cfg result]
-  (if (and (= :tool-protocol (:error result)) (zero? *protocol-attempts*))
-    (binding [*protocol-attempts* 1]
-      (chat* (corrective-request request result) provider-name cfg))
-    result))
-
-(defn chat [request provider-name cfg]
-  (retry-protocol request provider-name cfg (chat* request provider-name cfg)))
+              {:content text :model (:model request) :stop-reason :end-turn :tool-calls [] :usage usage}))))
 
 (defn- stream-once [request on-chunk cfg]
-  (ensure-driver! cfg)
-  (let [streaming? (and (not @fail-mcp-init?*)
-                        (or (driven? cfg)
-                            (:stream-non-tool-turns cfg)
-                            (:streamNonToolTurns cfg)))
+  (let [streaming? (or (driven? request) (:stream-non-tool-turns cfg) (:streamNonToolTurns cfg))
         result     (invoke! cfg request streaming?)
-        json?      (or (not streaming?) @fail-mcp-init?* @exit-before-stream*)]
+        json?      (not streaming?)]
     (if-let [weather (:weather result)]
       (weather-response weather (:model request))
       (if-not (failed? result)
-      (if json?
+        (if json?
         (let [{:keys [text usage]} (parse-json-output (:out result))
-              response (success-response (:model request) text usage)]
+              response {:content text :model (:model request) :stop-reason :end-turn :tool-calls [] :usage usage}]
           (when (and (seq text) (not (:error response)))
             (on-chunk {:text-delta text}))
           response)
@@ -1418,19 +1250,18 @@
               (on-chunk {:text-delta delta})))
           (let [response (if (seq (:tool-calls parsed))
                            parsed
-                           (success-response (:model request) content usage))
+                           {:content content :model (:model request) :stop-reason :end-turn :tool-calls [] :usage usage})
                 think    (str/join reasoning)]
             (if (str/blank? think)
               (dissoc response :reasoning)
               (assoc response :reasoning {:summary think})))))
         (error-response result)))))
 
-(defn chat-stream [request on-chunk provider-name cfg]
-  (let [result (stream-once request on-chunk cfg)]
-    (if (and (= :tool-protocol (:error result)) (zero? *protocol-attempts*))
-      (binding [*protocol-attempts* 1]
-        (chat* (corrective-request request result) provider-name cfg))
-      result)))
+(defn chat [request provider-name cfg]
+  (chat* request provider-name cfg))
+
+(defn chat-stream [request on-chunk _provider-name cfg]
+  (stream-once request on-chunk cfg))
 
 (defn followup-messages [request response tool-calls tool-results]
   (let [assistant-msg {:role "assistant" :content (:content response "")}
@@ -1447,18 +1278,17 @@
   (chat-stream [_ req on-chunk] (chat-stream req on-chunk provider-name cfg))
   (followup-messages [_ req resp tcs trs] (followup-messages req resp tcs trs))
   (config [_]
-    ;; Grover's feature fixture clears the global driver atom after make.
-    ;; Reinstall at the moment tool-loop/run asks whether we own the loop.
-    (ensure-driver! cfg)
-    (effective-cfg cfg))
+    ;; The driver is the only tool-loop implementation for this provider.
+    (tool-loop/install-provider-driver! claude-loop-driver)
+    (assoc cfg :drives-tool-loop? true))
   (display-name [_] provider-name)
   (format-tools [_ tools] (when (seq tools) (mapv api/wrapped-function-tool tools)))
   (build-prompt [_ opts] (prompt/build opts)))
 
 (defn make [name cfg]
-  (let [cfg (driven-cfg cfg)]
+  (let [cfg (remembered-config cfg)]
     (warn-missing-oauth-token! name cfg)
-    (ensure-driver! cfg)
+    (tool-loop/install-provider-driver! claude-loop-driver)
     (->ClaudeCliAPI name cfg)))
 
 ;; endregion ^^^^^ Public API ^^^^^

@@ -36,33 +36,6 @@
     (sut/clear-fake-cli!)
     (tool-loop/clear-provider-driver!))
 
-  (it "declares drives-tool-loop? and uses stream-json input when configured"
-    (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})]
-      (should (:drives-tool-loop? (api/config api)))
-      (sut/set-stub!
-        (constantly {:exit 0
-                     :out  (ndjson [{:type "assistant"
-                                     :message {:content [{:type "text" :text "ok"}]}}
-                                    (result-line "ok" (usage 10 0 0))])
-                     :err  ""}))
-      (api/chat api {:model "sonnet" :messages [{:role "user" :content "hi"}]})
-      (let [argv (:argv (first (sut/invocations)))]
-        (should (some #(= "--input-format" %) argv))
-        (should= "stream-json" (nth argv (inc (.indexOf argv "--input-format")))))))
-
-  (it "does not install stream-json input when drives-tool-loop? is omitted"
-    (let [api (sut/make "claude" {:command "claude"})]
-      (should-not (:drives-tool-loop? (api/config api)))
-      (sut/set-stub!
-        (constantly {:exit 0
-                     :out  (ndjson [{:type "assistant"
-                                     :message {:content [{:type "text" :text "ok"}]}}
-                                    (result-line "ok" (usage 10 0 0))])
-                     :err  ""}))
-      (api/chat api {:model "sonnet" :messages [{:role "user" :content "hi"}]})
-      (let [argv (:argv (first (sut/invocations)))]
-        (should (neg? (.indexOf argv "--input-format"))))))
-
   (it "drives one tool_use cycle then a text result through the drive tool-fn"
     (let [tool-runs (atom [])
           on-cycle  (atom [])]
@@ -71,11 +44,12 @@
          {:cycle 1 :kind "usage" :payload "{\"input_tokens\":200,\"cache_read_input_tokens\":50,\"cache_creation_input_tokens\":10}"}
          {:cycle 2 :kind "text" :payload "hi came back"}
          {:cycle 2 :kind "usage" :payload "{\"input_tokens\":260,\"cache_read_input_tokens\":60,\"cache_creation_input_tokens\":0}"}])
-      (let [api    (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+      (let [api    (sut/make "claude" {:command "claude" })
             result (tool-loop/run
                      (fn [req] (api/chat api req))
                      (fn [req _resp _tcs _trs] (:messages req))
-                     {:model "sonnet" :messages [{:role "user" :content "run it"}]}
+                     {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "user" :content "run it"}]}
                      (fn [name args]
                        (swap! tool-runs conj [name args])
                        "hi\n")
@@ -96,11 +70,12 @@
        {:cycle 2 :kind "text" :payload "hi came back"}
        {:cycle 2 :kind "usage" :payload "{\"input_tokens\":260,\"cache_read_input_tokens\":60,\"cache_creation_input_tokens\":0}"}
        {:cycle 2 :kind "result_usage" :payload "{\"input_tokens\":460,\"cache_read_input_tokens\":110,\"cache_creation_input_tokens\":10}"}])
-    (let [api    (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+    (let [api    (sut/make "claude" {:command "claude" })
           result (tool-loop/run
                    (fn [req] (api/chat api req))
                    (fn [req _resp _tcs _trs] (:messages req))
-                   {:model "sonnet" :messages [{:role "user" :content "run it"}]}
+                   {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "user" :content "run it"}]}
                    (fn [_name _args] "hi\n")
                    {:api api})]
       (should= 320 (get-in result [:response :usage :prompt-tokens]))
@@ -113,11 +88,12 @@
       [{:cycle 1 :kind "text" :payload "both done"}
        {:cycle 1 :kind "usage" :payload "{\"input_tokens\":1200}"}
        {:cycle 1 :kind "result_usage" :payload "{\"input_tokens\":802832}"}])
-    (let [api    (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+    (let [api    (sut/make "claude" {:command "claude" })
           result (tool-loop/run
                    (fn [req] (api/chat api req))
                    (fn [req _resp _tcs _trs] (:messages req))
-                   {:model "sonnet" :messages [{:role "user" :content "twice"}]}
+                   {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "user" :content "twice"}]}
                    (fn [_name _args] "ok")
                    {:api api})]
       (should= 1200 (get-in result [:response :usage :prompt-tokens]))
@@ -130,37 +106,16 @@
        {:cycle 1 :kind "usage" :payload "{\"input_tokens\":200,\"cache_read_input_tokens\":50,\"cache_creation_input_tokens\":10}"}
        {:cycle 2 :kind "text" :payload "hi came back"}
        {:cycle 2 :kind "usage" :payload "{\"input_tokens\":260,\"cache_read_input_tokens\":60,\"cache_creation_input_tokens\":0}"}])
-    (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})]
+    (let [api (sut/make "claude" {:command "claude" })]
       (tool-loop/clear-provider-driver!)
       (let [result (tool-loop/run
                      (fn [req] (api/chat api req))
                      (fn [req _resp _tcs _trs] (:messages req))
-                     {:model "sonnet" :messages [{:role "user" :content "run it"}]}
+                     {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "user" :content "run it"}]}
                      (fn [_name _args] "hi\n")
                      {:api api})]
         (should= 580 (:prompt-tokens (:usage result))))))
-
-  (it "does not treat a fake CLI as LoopDriver without drives-tool-loop?"
-    (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "ok"}])
-    (let [api (sut/make "claude" {:command "claude"})]
-      (should-not (:drives-tool-loop? (api/config api)))))
-
-  (it "survives augment-provider remake that drops drives-tool-loop?"
-    (sut/set-fake-cli!
-      [{:cycle 1 :kind "tool_use" :payload "{\"name\":\"exec__run\",\"input\":{\"command\":\"echo hi\"}}"}
-       {:cycle 1 :kind "usage" :payload "{\"input_tokens\":200,\"cache_read_input_tokens\":50,\"cache_creation_input_tokens\":10}"}
-       {:cycle 2 :kind "text" :payload "hi came back"}
-       {:cycle 2 :kind "usage" :payload "{\"input_tokens\":260,\"cache_read_input_tokens\":60,\"cache_creation_input_tokens\":0}"}])
-    (sut/make "claude" {:command "claude" :api "claude-cli" :drives-tool-loop? true})
-    (let [api    (sut/make "claude" {:session-key "main" :root "/tmp" :context-window 32768})
-          result (tool-loop/run
-                   (fn [req] (api/chat api req))
-                   (fn [req _resp _tcs _trs] (:messages req))
-                   {:model "sonnet" :messages [{:role "user" :content "run it"}]}
-                   (fn [_name _args] "hi\n")
-                   {:api api})]
-      (should (:drives-tool-loop? (api/config api)))
-      (should= 580 (:prompt-tokens (:usage result)))))
 
   (it "survives augment-provider remake that drops extra-args and command"
     (sut/set-stub!
@@ -170,11 +125,12 @@
     (sut/make "claude" {:command     "/custom/path/claude"
                        :api         "claude-cli"
                        :extra-args  ["--foo" "bar"]
-                       :drives-tool-loop? false})
+                       })
     (let [api (sut/make "claude" {:session-key "main" :root "/tmp" :context-window 32768})]
-      (api/chat api {:model "sonnet" :messages [{:role "user" :content "hi"}]})
+      (api/chat api {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "user" :content "hi"}]})
       (let [argv (:argv (first (sut/invocations)))]
-        (should-not (:drives-tool-loop? (api/config api)))
+        (should (:drives-tool-loop? (api/config api)))
         (should= "/custom/path/claude" (first argv))
         (should= "bar" (nth argv (inc (.indexOf argv "--foo")))))))
 
@@ -182,19 +138,19 @@
     (sut/make "claude" {:command                "claude"
                        :api                    "claude-cli"
                        :stream-non-tool-turns  true
-                       :drives-tool-loop?      false})
+                       })
     (let [api (sut/make "claude" {:session-key "main" :root "/tmp" :context-window 32768})]
       (should (:stream-non-tool-turns (api/config api)))
-      (should-not (:drives-tool-loop? (api/config api)))))
+      (should (:drives-tool-loop? (api/config api)))))
 
   (it "survives augment-provider remake that drops stream-supports-tool-calls false"
     (sut/make "claude" {:command                     "claude"
                        :api                         "claude-cli"
                        :stream-supports-tool-calls  false
-                       :drives-tool-loop?           false})
+                       })
     (let [api (sut/make "claude" {:session-key "main" :root "/tmp" :context-window 32768})]
       (should= false (:stream-supports-tool-calls (api/config api)))
-      (should-not (:drives-tool-loop? (api/config api)))))
+      (should (:drives-tool-loop? (api/config api)))))
 
   (it "emits thinking as :reasoning on stream chunks"
     (let [chunks (atom [])
@@ -204,7 +160,8 @@
                            :delta {:text "here is my answer"}}
                           (result-line "here is my answer" (usage 10 0 0))])]
       (sut/set-stub! (constantly {:exit 0 :out out :err ""}))
-      (sut/chat-stream {:model "sonnet" :messages [{:role "user" :content "think"}]}
+      (sut/chat-stream {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "user" :content "think"}]}
                        (fn [chunk] (swap! chunks conj chunk))
                        "claude"
                        {:command "claude" :stream-non-tool-turns true})
@@ -219,61 +176,12 @@
                                   (result-line "ok" (usage 10 0 0))])
                    :err  ""}))
     (log/capture-logs
-      (let [api   (sut/make "claude" {:command "claude" :drives-tool-loop? true})
-            _     (api/chat api {:model "sonnet" :messages [{:role "user" :content "hi"}]})
+      (let [api   (sut/make "claude" {:command "claude" })
+            _     (api/chat api {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "user" :content "hi"}]})
             entry (first (filter #(= :claude/title-side-call (:event %)) @log/captured-logs))]
         (should-not-be-nil entry)
         (should= false (:found entry)))))
-
-  (it "falls back to the fence path and logs when MCP init fails"
-    (sut/set-stub!
-      (constantly {:exit 0
-                   :out  (json/generate-string {:type "result" :result "fenced"})
-                   :err  ""}))
-    (log/capture-logs
-      (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})
-            _   (sut/fail-mcp-init!)
-            res (api/chat api {:model "sonnet" :messages [{:role "user" :content "fallback"}]})
-            entry (first (filter #(= :claude/driver-fallback (:event %)) @log/captured-logs))]
-        (should= "fenced" (:content res))
-        (should-not-be-nil entry)
-        (should= "claude" (:provider entry))
-        (should= :mcp-init (:reason entry))
-        (let [argv (:argv (first (sut/invocations)))]
-          (should (<= 0 (.indexOf argv "--print")))
-          (should= "json" (nth argv (inc (.indexOf argv "--output-format"))))))))
-
-  (it "stops claiming the tool loop once it has fallen back to the fence path (isaac-zz6d)"
-    ;; In fence mode the CLI runs with no MCP tools, so Isaac must execute the
-    ;; tool calls the model writes as text. tool-loop/run asks the Api whether
-    ;; the provider drives the loop; answering yes here hands the loop to a
-    ;; driver that assumes the CLI already ran the tools, so the parsed calls
-    ;; are dropped and the turn dies as :empty-terminal-response.
-    (sut/set-stub!
-      (constantly {:exit 0
-                   :out  (json/generate-string {:type "result" :result "fenced"})
-                   :err  ""}))
-    (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})]
-      (should= true (:drives-tool-loop? (api/config api)))
-      (sut/fail-mcp-init!)
-      (api/chat api {:model "sonnet" :messages [{:role "user" :content "fallback"}]})
-      (should= false (:drives-tool-loop? (api/config api)))))
-
-  (it "falls back to fence json even when the caller requested a stream"
-    (sut/set-stub!
-      (constantly {:exit 0
-                   :out  (json/generate-string {:type "result" :result "fenced"})
-                   :err  ""}))
-    (sut/fail-mcp-init!)
-    (let [chunks (atom [])
-          res    (sut/chat-stream {:model "sonnet" :messages [{:role "user" :content "fallback"}]}
-                                  (fn [chunk] (swap! chunks conj chunk))
-                                  "claude"
-                                  {:command "claude" :drives-tool-loop? true})
-          argv   (:argv (first (sut/invocations)))]
-      (should= "fenced" (:content res))
-      (should= "json" (nth argv (inc (.indexOf argv "--output-format"))))
-      (should (neg? (.indexOf argv "--input-format")))))
 
   (it "passes --verbose with stream-json on a driven turn"
     (sut/set-stub!
@@ -282,8 +190,9 @@
                                    :message {:content [{:type "text" :text "ok"}]}}
                                   (result-line "ok" (usage 10 0 0))])
                    :err  ""}))
-    (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})]
-      (api/chat api {:model "sonnet" :messages [{:role "user" :content "hi"}]})
+    (let [api (sut/make "claude" {:command "claude" })]
+      (api/chat api {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "user" :content "hi"}]})
       (let [argv (:argv (first (sut/invocations)))]
         (should= "stream-json" (nth argv (inc (.indexOf argv "--output-format"))))
         (should (<= 0 (.indexOf argv "--verbose"))))))
@@ -294,7 +203,8 @@
                    :out  (ndjson [{:type "content_block_delta" :delta {:text "ok"}}
                                   (result-line "ok" (usage 10 0 0))])
                    :err  ""}))
-    (sut/chat-stream {:model "sonnet" :messages [{:role "user" :content "hi"}]}
+    (sut/chat-stream {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "user" :content "hi"}]}
                      (fn [_])
                      "claude"
                      {:command "claude" :stream-non-tool-turns true})
@@ -308,26 +218,6 @@
       (should= 1 (:exit result))
       (should (str/includes? (:err result) "When using --print, --output-format=stream-json requires --verbose"))
       (should= "" (:out result))))
-
-  (it "falls back to the fence path when the CLI exits before the first stream event"
-    (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "fenced"}])
-    (sut/exit-before-streaming! 1 "Error: When using --print, --output-format=stream-json requires --verbose")
-    (log/capture-logs
-      (let [api    (sut/make "claude" {:command "claude" :drives-tool-loop? true})
-            res    (api/chat api {:model "sonnet" :messages [{:role "user" :content "fallback"}]})
-            entry  (first (filter #(= :claude/driver-fallback (:event %)) @log/captured-logs))
-            first-argv  (:argv (first (sut/invocations)))
-            second-argv (:argv (second (sut/invocations)))]
-        (should= "fenced" (:content res))
-        (should-not-be-nil entry)
-        (should= "claude" (:provider entry))
-        (should= :cli-start-failed (:reason entry))
-        (should (re-find #"stream-json requires --verbose" (str (:stderr entry))))
-        (should= 2 (count (sut/invocations)))
-        (should= "stream-json" (nth first-argv (inc (.indexOf first-argv "--output-format"))))
-        (should (<= 0 (.indexOf first-argv "--verbose")))
-        (should= "json" (nth second-argv (inc (.indexOf second-argv "--output-format"))))
-        (should (<= 0 (.indexOf second-argv "--print"))))))
 
   (it "assembles the reply from stream_event content_block_delta text_delta chunks and logs driver-exit"
     (let [out (ndjson [{:type  "stream_event"
@@ -345,8 +235,9 @@
                         :usage       (usage 2 3289 5473)}])]
       (sut/set-stub! (constantly {:exit 0 :out out :err ""}))
       (log/capture-logs
-        (let [api      (sut/make "claude" {:command "claude" :drives-tool-loop? true})
-              res      (api/chat api {:model "sonnet" :messages [{:role "user" :content "Reply with exactly: pong"}]})
+        (let [api      (sut/make "claude" {:command "claude" })
+              res      (api/chat api {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "user" :content "Reply with exactly: pong"}]})
               exit-log (first (filter #(= :claude/driver-exit (:event %)) @log/captured-logs))]
           (should= "pong" (:content res))
           (should= 8764 (:prompt-tokens (:usage res)))
@@ -380,48 +271,15 @@
       (should= true (:is_error result-evt))
       (should (str/includes? (str (:result result-evt)) "failed to connect"))))
 
-  (it "falls back to the fence path with :cli-error when the result event has is_error"
-    (sut/set-fake-cli! [{:cycle 1 :kind "error_result" :payload "MCP server \"isaac\" failed to connect"}])
-    (log/capture-logs
-      (let [api         (sut/make "claude" {:command "claude" :drives-tool-loop? true})
-            _           (api/chat api {:model "sonnet" :messages [{:role "user" :content "fallback please"}]})
-            exit-log    (first (filter #(= :claude/driver-exit (:event %)) @log/captured-logs))
-            fallback    (first (filter #(= :claude/driver-fallback (:event %)) @log/captured-logs))
-            first-argv  (:argv (first (sut/invocations)))
-            second-argv (:argv (second (sut/invocations)))]
-        (should-not-be-nil exit-log)
-        (should-not-be-nil fallback)
-        (should= "claude" (:provider fallback))
-        (should= :cli-error (:reason fallback))
-        (should (re-find #"(?s).*failed to connect.*" (str (:stderr fallback))))
-        (should= 2 (count (sut/invocations)))
-        (should= "stream-json" (nth first-argv (inc (.indexOf first-argv "--output-format"))))
-        (should= "json" (nth second-argv (inc (.indexOf second-argv "--output-format"))))
-        (should (<= 0 (.indexOf second-argv "--print"))))))
-
-  (it "falls back to the fence path with :cli-error when the process exits with no result event"
-    (sut/set-stub!
-      (constantly {:exit 0
-                   :out  (ndjson [{:type  "stream_event"
-                                   :event {:type  "content_block_delta"
-                                           :delta {:type "text_delta" :text ""}}}])
-                   :err  "MCP server \"isaac\" failed to connect"}))
-    (log/capture-logs
-      (let [api      (sut/make "claude" {:command "claude" :drives-tool-loop? true})
-            _        (api/chat api {:model "sonnet" :messages [{:role "user" :content "fallback please"}]})
-            fallback (first (filter #(= :claude/driver-fallback (:event %)) @log/captured-logs))]
-        (should-not-be-nil fallback)
-        (should= :cli-error (:reason fallback))
-        (should (re-find #"(?s).*failed to connect.*" (str (:stderr fallback)))))))
-
   (it "answers a session limit after cycles with rate-limited weather, not a fence fallback (isaac-2sxf)"
     (sut/set-fake-cli!
       [{:cycle 1 :kind "tool_use" :payload "{\"name\":\"exec__run\",\"input\":{\"command\":\"echo hi\"}}"}
        {:cycle 1 :kind "usage" :payload "{\"input_tokens\":200,\"cache_read_input_tokens\":50,\"cache_creation_input_tokens\":10}"}
        {:cycle 2 :kind "error_result" :payload "You've hit your session limit · resets 4:40pm (America/Phoenix)"}])
     (log/capture-logs
-      (let [api      (sut/make "claude" {:command "claude" :drives-tool-loop? true})
-            response (api/chat api {:model "sonnet" :messages [{:role "user" :content "go"}]})]
+      (let [api      (sut/make "claude" {:command "claude" })
+            response (api/chat api {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "user" :content "go"}]})]
         (should= :rate-limited (:error response))
         (should= true (:unavailable? response))
         (should= :wall (:reason response))
@@ -435,8 +293,9 @@
     (sut/set-fake-cli!
       [{:cycle 1 :kind "error_result" :payload "You've hit your session limit · resets 4:40pm (America/Phoenix)"}])
     (log/capture-logs
-      (let [api      (sut/make "claude" {:command "claude" :drives-tool-loop? true})
-            response (api/chat api {:model "sonnet" :messages [{:role "user" :content "go"}]})]
+      (let [api      (sut/make "claude" {:command "claude" })
+            response (api/chat api {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "user" :content "go"}]})]
         (should= :rate-limited (:error response))
         (should= :wall (:reason response))
         (should= 1 (count (sut/invocations)))
@@ -446,8 +305,9 @@
     (sut/set-fake-cli!
       [{:cycle 1 :kind "error_result" :payload "Failed to authenticate: OAuth session expired"}])
     (log/capture-logs
-      (let [api      (sut/make "claude" {:command "claude" :drives-tool-loop? true})
-            response (api/chat api {:model "sonnet" :messages [{:role "user" :content "go"}]})]
+      (let [api      (sut/make "claude" {:command "claude" })
+            response (api/chat api {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "user" :content "go"}]})]
         (should= :auth-failed (:error response))
         (should= true (:unavailable? response))
         (should= :auth (:reason response))
@@ -464,8 +324,9 @@
        {:cycle 3 :kind "usage" :payload "{\"input_tokens\":300,\"output_tokens\":7,\"cache_read_input_tokens\":70,\"cache_creation_input_tokens\":0}"}
        {:cycle 4 :kind "error_result" :payload "You've hit your session limit · resets 4:40pm (America/Phoenix)"}])
     (log/capture-logs
-      (let [api      (sut/make "claude" {:command "claude" :drives-tool-loop? true})
-            response (api/chat api {:model "sonnet" :messages [{:role "user" :content "go"}]})
+      (let [api      (sut/make "claude" {:command "claude" })
+            response (api/chat api {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "user" :content "go"}]})
             exit-log (first (filter #(= :claude/driver-exit (:event %)) @log/captured-logs))]
         (should= :rate-limited (:error response))
         (should= [260 320 370] (mapv :prompt-tokens (:cycle-usages response)))
@@ -487,8 +348,9 @@
        {:cycle 2 :kind "text" :payload "done"}
        {:cycle 2 :kind "usage" :payload "{\"input_tokens\":260,\"output_tokens\":9,\"cache_read_input_tokens\":60,\"cache_creation_input_tokens\":0}"}])
     (log/capture-logs
-      (let [api      (sut/make "claude" {:command "claude" :drives-tool-loop? true})
-            _        (api/chat api {:model "sonnet" :messages [{:role "user" :content "go"}]})
+      (let [api      (sut/make "claude" {:command "claude" })
+            _        (api/chat api {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "user" :content "go"}]})
             exit-log (first (filter #(= :claude/driver-exit (:event %)) @log/captured-logs))]
         (should= 2 (:cycles exit-log))
         (should= 460 (:input-tokens exit-log))
@@ -499,24 +361,27 @@
   (it "reads the limit only from the CLI's own error signal, never the transcript (isaac-benp)"
     (sut/set-fake-cli!
       [{:cycle 1 :kind "text" :payload "the log says: You've hit your session limit"}])
-    (let [api      (sut/make "claude" {:command "claude" :drives-tool-loop? true})
-          response (api/chat api {:model "sonnet" :messages [{:role "user" :content "go"}]})]
+    (let [api      (sut/make "claude" {:command "claude" })
+          response (api/chat api {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "user" :content "go"}]})]
       (should-be-nil (:error response))
       (should= "the log says: You've hit your session limit" (:content response))))
 
   (it "returns the reply when the transcript says Not logged in and the CLI exited clean (isaac-benp)"
     (sut/set-fake-cli!
       [{:cycle 1 :kind "text" :payload "The docs say: Not logged in · Please run /login"}])
-    (let [api      (sut/make "claude" {:command "claude" :drives-tool-loop? true})
-          response (api/chat api {:model "sonnet" :messages [{:role "user" :content "go"}]})]
+    (let [api      (sut/make "claude" {:command "claude" })
+          response (api/chat api {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "user" :content "go"}]})]
       (should-be-nil (:error response))
       (should-be-nil (:unavailable? response))
       (should= "The docs say: Not logged in · Please run /login" (:content response))))
 
   (it "emits stream-json user envelopes on stdin, never bare role/content lines"
     (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "second"}])
-    (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})]
+    (let [api (sut/make "claude" {:command "claude" })]
       (api/chat api {:model    "sonnet"
+                     :tools [{:type "function" :function {:name "exec__run"}}]
                      :messages [{:role "user" :content "one"}
                                 {:role "assistant" :content "first"}
                                 {:role "user" :content "two"}]})
@@ -558,8 +423,9 @@
 
   (it "passes --mcp-config naming an HTTP server at this turn's own listener, bearer in the header, no command"
     (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "ok"}])
-    (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})]
-      (api/chat api {:model "sonnet" :messages [{:role "user" :content "hi"}]})
+    (let [api (sut/make "claude" {:command "claude" })]
+      (api/chat api {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "user" :content "hi"}]})
       (let [invocation (first (sut/invocations))
             argv       (:argv invocation)
             idx        (.indexOf argv "--mcp-config")
@@ -582,22 +448,23 @@
       (with-redefs [mcp-listener/start! (fn [_] {:url "http://127.0.0.1:7000" :nonce "reef"})
                     mcp-listener/stop!  #(swap! stopped conj %)
                     mcp-turns/clear!    #(swap! cleared conj %)]
-        (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})]
-          (api/chat api {:model "sonnet" :messages [{:role "user" :content "hi"}]})))
+        (let [api (sut/make "claude" {:command "claude" })]
+          (api/chat api {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "user" :content "hi"}]})))
       (should= 1 (count @stopped))
       (should= @stopped @cleared)))
 
   (it "omits the tool protocol contract from --system-prompt on a driven turn"
     (sut/set-fake-cli! [{:cycle 1 :kind "tool_use" :payload "{\"name\":\"exec__run\",\"input\":{\"command\":\"echo hi\"}}"}
                         {:cycle 1 :kind "text" :payload "hi came back"}])
-    (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})]
+    (let [api (sut/make "claude" {:command "claude" })]
       (api/chat api {:model    "sonnet"
                      :messages [{:role "user" :content "run it"}]
                      :tools    [{:type "function" :function {:name "exec__run"}}]})
       (let [argv   (:argv (first (sut/invocations)))
             idx    (.indexOf argv "--system-prompt")
             system (when (<= 0 idx) (nth argv (inc idx)))]
-        (should-not (str/includes? (str system) sut/tool-protocol-contract))
+        (should-not (str/includes? (str system) "<tool_call>"))
         (should-not (re-find #"<tool_call>" (str system)))
         (should-not (re-find #"tool_call>" (str system))))))
 
@@ -614,33 +481,11 @@
       (should= "failed" (:status (first (:mcp_servers init))))
       (should= [] (:tools init))))
 
-  (it "falls back and logs mcp-status when the init event reports isaac MCP failed"
-    (sut/set-fake-cli! [{:cycle 1 :kind "mcp_status" :payload "{\"mcp_servers\":[{\"name\":\"isaac\",\"status\":\"failed\"}],\"tools\":[]}"}
-                        {:cycle 1 :kind "text" :payload "I have no tools"}])
-    (log/capture-logs
-      (let [api         (sut/make "claude" {:command "claude" :drives-tool-loop? true})
-            _           (api/chat api {:model    "sonnet"
-                                       :messages [{:role "user" :content "run it"}]
-                                       :tools    [{:type "function" :function {:name "exec__run"}}]})
-            status      (first (filter #(= :claude/mcp-status (:event %)) @log/captured-logs))
-            fallback    (first (filter #(= :claude/driver-fallback (:event %)) @log/captured-logs))
-            second-argv (:argv (second (sut/invocations)))]
-        (should-not-be-nil status)
-        (should= "claude" (:provider status))
-        (should= 0 (:tools status))
-        (should (re-find #"(?s).*isaac.*failed.*" (str (:servers status))))
-        (should-not-be-nil fallback)
-        (should= "claude" (:provider fallback))
-        (should= :mcp-failed (:reason fallback))
-        (should= 2 (count (sut/invocations)))
-        (should= "json" (nth second-argv (inc (.indexOf second-argv "--output-format"))))
-        (should (<= 0 (.indexOf second-argv "--print"))))))
-
   (it "logs mcp-status and stays on the driven path when isaac is connected with tools"
     (sut/set-fake-cli! [{:cycle 1 :kind "mcp_status" :payload "{\"mcp_servers\":[{\"name\":\"isaac\",\"status\":\"connected\"}],\"tools\":[\"exec__run\"]}"}
                         {:cycle 1 :kind "text" :payload "ok"}])
     (log/capture-logs
-      (let [api      (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+      (let [api      (sut/make "claude" {:command "claude" })
             res      (api/chat api {:model    "sonnet"
                                     :messages [{:role "user" :content "run it"}]
                                     :tools    [{:type "function" :function {:name "exec__run"}}]})
@@ -653,42 +498,14 @@
         (should-be-nil fallback)
         (should= 1 (count (sut/invocations))))))
 
-  (it "falls back with :mcp-failed when init reports zero tools on a turn that has tools"
-    (sut/set-fake-cli! [{:cycle 1 :kind "mcp_status" :payload "{\"mcp_servers\":[{\"name\":\"isaac\",\"status\":\"connected\"}],\"tools\":[]}"}
-                        {:cycle 1 :kind "text" :payload "toolless"}])
-    (log/capture-logs
-      (let [api      (sut/make "claude" {:command "claude" :drives-tool-loop? true})
-            _        (api/chat api {:model    "sonnet"
-                                    :messages [{:role "user" :content "run it"}]
-                                    :tools    [{:type "function" :function {:name "exec__run"}}]})
-            fallback (first (filter #(= :claude/driver-fallback (:event %)) @log/captured-logs))]
-        (should-not-be-nil fallback)
-        (should= :mcp-failed (:reason fallback))
-        (should= 2 (count (sut/invocations))))))
-
-  (it "falls back with :mcp-failed when a driven reply still contains a tool_call fence"
-    (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "<tool_call>{\"name\":\"exec__run\",\"arguments\":{\"command\":\"echo hi\"}}</tool_call>"}])
-    (log/capture-logs
-      (let [api         (sut/make "claude" {:command "claude" :drives-tool-loop? true})
-            _           (api/chat api {:model    "sonnet"
-                                       :messages [{:role "user" :content "run it"}]
-                                       :tools    [{:type "function" :function {:name "exec__run"}}]})
-            fallback    (first (filter #(= :claude/driver-fallback (:event %)) @log/captured-logs))
-            first-argv  (:argv (first (sut/invocations)))
-            second-argv (:argv (second (sut/invocations)))]
-        (should-not-be-nil fallback)
-        (should= :mcp-failed (:reason fallback))
-        (should= 2 (count (sut/invocations)))
-        (should= "stream-json" (nth first-argv (inc (.indexOf first-argv "--output-format"))))
-        (should= "json" (nth second-argv (inc (.indexOf second-argv "--output-format")))))))
-
   (it "ignores configured server endpoints and tokens"
     (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "ok"}])
     (let [api (sut/make "claude" {:command        "claude"
-                                  :drives-tool-loop? true
+
                                   :mcp-server-url "http://127.0.0.1:9000"
                                   :mcp-token      "harbor-secret"})]
-      (api/chat api {:model "sonnet" :messages [{:role "user" :content "hi"}]})
+      (api/chat api {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "user" :content "hi"}]})
       (let [server (get-in (sut/last-mcp-config) [:body :mcpServers :isaac])
             combo  (pr-str server)]
         (should-not (str/includes? combo "9000"))
@@ -699,7 +516,7 @@
                         {:cycle 1 :kind "tool_use" :payload "{\"name\":\"exec__run\",\"input\":{\"command\":\"echo hi\"}}"}
                         {:cycle 1 :kind "text" :payload "hi came back"}])
     (log/capture-logs
-      (let [api      (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+      (let [api      (sut/make "claude" {:command "claude" })
             res      (api/chat api {:model    "sonnet"
                                     :messages [{:role "user" :content "run it"}]
                                     :tools    [{:type "function" :function {:name "exec__run"}}]})
@@ -723,11 +540,12 @@
                               :message {:content [{:type "text" :text "hi came back"}]}}
                              (result-line "hi came back" (usage 260 60 0))])]
       (sut/set-stub! (constantly {:exit 0 :out out :err ""}))
-      (let [api    (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+      (let [api    (sut/make "claude" {:command "claude" })
             result (tool-loop/run
                      (fn [req] (api/chat api req))
                      (fn [req _resp _tcs _trs] (:messages req))
-                     {:model "sonnet" :messages [{:role "user" :content "run it"}]}
+                     {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "user" :content "run it"}]}
                      (fn [name args]
                        (swap! tool-runs conj [name args])
                        "hi\n")
@@ -748,8 +566,9 @@
                         :message {:content [{:type "text" :text "mcp-loop-ok"}]}}
                        (result-line "mcp-loop-ok" (usage 2 0 0))])]
       (sut/set-stub! (constantly {:exit 0 :out out :err ""}))
-      (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})
-            res (api/chat api {:model "sonnet" :messages [{:role "user" :content "ping"}]})]
+      (let [api (sut/make "claude" {:command "claude" })
+            res (api/chat api {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "user" :content "ping"}]})]
         (should= "mcp-loop-ok" (:content res)))))
 
   (it "uses the result event's text once when deltas, the assistant message, and result all carry it"
@@ -760,8 +579,9 @@
                         :message {:content [{:type "text" :text "ALSO-WRONG"}]}}
                        (result-line "mcp-loop-ok" (usage 2 0 0))])]
       (sut/set-stub! (constantly {:exit 0 :out out :err ""}))
-      (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})
-            res (api/chat api {:model "sonnet" :messages [{:role "user" :content "ping"}]})]
+      (let [api (sut/make "claude" {:command "claude" })
+            res (api/chat api {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "user" :content "ping"}]})]
         (should= "mcp-loop-ok" (:content res)))))
 
   (it "fake CLI emits deltas, an assistant message, and a result_text event for the same reply"
@@ -782,8 +602,9 @@
       (should= "mcp-loop-ok" (get-in (first msgs) [:message :content 0 :text]))
       (should= 1 (count results))
       (should= "mcp-loop-ok" (:result (last results)))
-      (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})
-            res (api/chat api {:model "sonnet" :messages [{:role "user" :content "ping"}]})]
+      (let [api (sut/make "claude" {:command "claude" })
+            res (api/chat api {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "user" :content "ping"}]})]
         (should= "mcp-loop-ok" (:content res)))))
 
   (it "fake CLI emits every scripted cycle in one process with a single result event"
@@ -817,8 +638,9 @@
                         :message {:content [{:type "text" :text "hi came back"}]}}
                        (result-line "hi came back" (usage 260 60 0))])]
       (sut/set-stub! (constantly {:exit 0 :out out :err ""}))
-      (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})
-            res (api/chat api {:model "sonnet" :messages [{:role "user" :content "run it"}]})]
+      (let [api (sut/make "claude" {:command "claude" })
+            res (api/chat api {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "user" :content "run it"}]})]
         (should= "hi came back" (:content res))
         (should= "exec__run" (:name (first (:tool-calls res))))))
 
@@ -826,8 +648,9 @@
     (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "OK"}
                         {:cycle 1 :kind "tool_use" :payload "{\"name\":\"mcp__isaac__exec__run\",\"input\":{\"command\":\"echo hi\"}}"}
                         {:cycle 2 :kind "text" :payload "hi came back"}])
-    (let [api (sut/make "claude" {:command "claude" :drives-tool-loop? true})
-          res (api/chat api {:model "sonnet" :messages [{:role "user" :content "run it"}]})]
+    (let [api (sut/make "claude" {:command "claude" })
+          res (api/chat api {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "user" :content "run it"}]})]
       (should= "hi came back" (:content res))
       (should= ["OK"] (:asides res))
       (should= "exec__run" (:name (first (:tool-calls res))))))
@@ -837,11 +660,12 @@
       (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "OK"}
                           {:cycle 1 :kind "tool_use" :payload "{\"name\":\"mcp__isaac__exec__run\",\"input\":{\"command\":\"echo hi\"}}"}
                           {:cycle 2 :kind "text" :payload "hi came back"}])
-      (let [api    (sut/make "claude" {:command "claude" :drives-tool-loop? true})
+      (let [api    (sut/make "claude" {:command "claude" })
             result (tool-loop/run
                      (fn [req] (api/chat api req))
                      (fn [req _resp _tcs _trs] (:messages req))
-                     {:model "sonnet" :messages [{:role "user" :content "run it"}]}
+                     {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "user" :content "run it"}]}
                      (fn [_name _args]
                        (swap! cycles conj {:phase :tool})
                        "hi\n")

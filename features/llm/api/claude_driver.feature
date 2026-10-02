@@ -206,7 +206,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | event                   |
       | :claude/driver-fallback |
 
-  @wip
   Scenario: MCP failing to come up suspends the turn as weather, not a fenced reply (isaac-izc1)
     Fence mode is gone: a driven turn that can't bring MCP up doesn't fall back
     to a hand-parsed text reply and it doesn't end :llm-error either. It's
@@ -228,7 +227,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | event                   |
       | :claude/driver-fallback |
 
-  @wip
   Scenario: the suspended turn resumes in driven mode once MCP initializes cleanly (isaac-izc1)
     Given a fake Claude Code on the path scripted with:
       | cycle | kind | payload |
@@ -256,7 +254,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | --mcp-config        | #".*\.json" |
     And no turn marker exists for session "main"
 
-  @wip
   Scenario: a weekly usage limit is weather too, with no prior conditions (isaac-izc1)
     Given a fake Claude Code on the path scripted with:
       | cycle | kind         | payload                                                    |
@@ -269,7 +266,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | reason    | :wall |
     And the fake Claude Code was invoked exactly once
 
-  @wip
   Scenario: repeated MCP failure escalates to an attention notice after the retry budget (isaac-izc1)
     Given config:
       | key                          | value       |
@@ -299,7 +295,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | target  | boiler-room                |
       | content | contains "main" and "mcp"  |
 
-  @wip
   Scenario: a tool-less completion still works without MCP (isaac-izc1)
     A crew with no allowed tools has nothing for MCP to serve; the turn is a
     plain completion and never wires up the per-turn listener at all.

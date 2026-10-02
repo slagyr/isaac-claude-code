@@ -89,8 +89,9 @@
                            {:type "content_block_delta" :delta {:type "thinking_delta" :thinking "  "}})
                          (json/generate-string {:type "result" :result "answered"})])
           _   (sut/set-stub! (constantly {:exit 0 :out out :err ""}))
-          res (sut/chat {:model "sonnet" :messages [{:role "user" :content "hi"}]}
-                        "claude" {:command "claude" :drives-tool-loop? true})]
+          res (sut/chat {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                        :messages [{:role "user" :content "hi"}]}
+                        "claude" {:command "claude" })]
       (should= "answered" (:content res))
       (should= nil (:reasoning res))))
 
@@ -138,103 +139,6 @@
         (should (str/includes? (:in inv) body))
         (should-not (some #(str/includes? (str %) body) (:argv inv))))))
 
-  (it "puts the tool protocol contract in --system-prompt when tools are present"
-    (sut/clear-invocations!)
-    (sut/chat {:model    "sonnet"
-               :messages [{:role "system" :content "Be wise."}
-                          {:role "user" :content "run it"}]
-               :tools    [{:type "function" :function {:name "exec"}}]}
-              "claude" {:command "claude"})
-    (let [inv    (first (sut/invocations))
-          argv   (:argv inv)
-          idx    (.indexOf argv "--system-prompt")
-          system (when (<= 0 idx) (nth argv (inc idx)))]
-      (should (str/includes? system sut/tool-protocol-contract))
-      (should (str/includes? system "## Tools"))
-      (should-not (str/includes? (str (:in inv)) sut/tool-protocol-contract))
-      (should-not (str/includes? (str (:in inv)) "## Tools"))))
-
-  (it "parses native invoke syntax as a tool call"
-    (let [text "<invoke name=\"exec__run\"><parameter name=\"command\">echo drift</parameter></invoke>"
-          res  (#'sut/success-response "sonnet" text {})
-          call (first (:tool-calls res))]
-      (should= :tool-use (:stop-reason res))
-      (should= "exec__run" (:name call))
-      (should= {:command "echo drift"} (:arguments call))))
-
-  (it "parses a bare JSON call in a markdown fence"
-    (let [text "```{\"name\":\"exec__run\",\"arguments\":{\"command\":\"echo fenced\"}}```"
-          call (first (:tool-calls (#'sut/success-response "sonnet" text {})))]
-      (should= "exec__run" (:name call))
-      (should= {:command "echo fenced"} (:arguments call))))
-
-  (it "drops all model text after the first parsed call"
-    (let [text "before<tool_call>{\"name\":\"exec__run\",\"arguments\":{}}</tool_call>fabricated"
-          res  (#'sut/success-response "sonnet" text {})]
-      (should= "before" (:content res))))
-
-  (it "parses fence and invoke calls in source order"
-    (let [text  (str "<tool_call>{\"name\":\"exec__run\",\"arguments\":{\"command\":\"one\"}}</tool_call>"
-                     " then <invoke name=\"exec__run\"><parameter name=\"command\">two</parameter></invoke>")
-          calls (:tool-calls (#'sut/success-response "sonnet" text {}))]
-      (should= ["one" "two"] (mapv #(get-in % [:arguments :command]) calls))))
-
-  (it "parses JSON-looking invoke parameter values"
-    (let [text "<invoke name=\"exec__run\"><parameter name=\"limit\">2</parameter></invoke>"
-          call (first (:tool-calls (#'sut/success-response "sonnet" text {})))]
-      (should= {:limit 2} (:arguments call))))
-
-  (it "returns malformed fences as tool protocol errors instead of throwing"
-    (let [text "<tool_call>{\"name\":\"exec__run\",\"arguments\":{bad}}</tool_call>"
-          res  (#'sut/success-response "sonnet" text {})]
-      (should= :tool-protocol (:error res))
-      (should (str/includes? (:message res) "could not be parsed"))))
-
-  (it "returns unclosed invoke blocks as tool protocol errors"
-    (let [text "<invoke name=\"exec__run\"><parameter name=\"command\">one</invoke>"
-          res  (#'sut/success-response "sonnet" text {})]
-      (should= :tool-protocol (:error res))
-      (should (:unavailable? res))))
-
-  (it "retries a malformed fence once, then executes the well-formed call"
-    (let [calls (atom 0)]
-      (sut/clear-invocations!)
-      (sut/set-stub!
-        (fn [_]
-          (swap! calls inc)
-          (if (= 1 @calls)
-            {:exit 0
-             :out  (json/generate-string {:type "result" :result "<tool_call>{\"name\":\"exec__run\",\"arguments\":{bad}}</tool_call>"})
-             :err  ""}
-            {:exit 0
-             :out  (json/generate-string {:type "result" :result "<tool_call>{\"name\":\"exec__run\",\"arguments\":{\"command\":\"echo fixed\"}}</tool_call>"})
-             :err  ""})))
-      (let [res (sut/chat {:model "sonnet" :messages [{:role "user" :content "run it"}]}
-                          "claude" {:command "claude"})]
-        (should= 2 @calls)
-        (should= "exec__run" (:name (first (:tool-calls res))))
-        (should= {:command "echo fixed"} (:arguments (first (:tool-calls res)))))))
-
-  (it "retries a malformed fence on the stream path the same way"
-    (let [calls (atom 0)]
-      (sut/clear-invocations!)
-      (sut/set-stub!
-        (fn [_]
-          (swap! calls inc)
-          (if (= 1 @calls)
-            {:exit 0
-             :out  (json/generate-string {:type "result" :result "<tool_call>{\"name\":\"exec__run\",\"arguments\":{bad}}</tool_call>"})
-             :err  ""}
-            {:exit 0
-             :out  (json/generate-string {:type "result" :result "<tool_call>{\"name\":\"exec__run\",\"arguments\":{\"command\":\"echo fixed\"}}</tool_call>"})
-             :err  ""})))
-      (let [res (sut/chat-stream {:model "sonnet" :messages [{:role "user" :content "run it"}]}
-                                 (fn [_])
-                                 "claude" {:command "claude"})]
-        (should= 2 @calls)
-        (should= "exec__run" (:name (first (:tool-calls res))))
-        (should= {:command "echo fixed"} (:arguments (first (:tool-calls res)))))))
-
   (it "suppresses all tools with --tools \"\" and never emits the bad flags"
     (sut/clear-invocations!)
     (sut/chat {:model "sonnet" :messages [{:role "user" :content "yo"}]}
@@ -250,7 +154,7 @@
     (sut/set-stub! (constantly {:exit 1 :out "" :err "Not logged in · Please run /login"}))
     (let [res (sut/chat {:model "sonnet" :messages [{:role "user" :content "hi"}]}
                         "claude" {:command "claude"})]
-      (should= :llm-error (:error res))
+      (should= :auth-failed (:error res))
       (should (str/includes? (:message res) "Please run /login"))
       (should (:unavailable? res))
       (should= :auth (:reason res))))

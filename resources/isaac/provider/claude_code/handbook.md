@@ -23,8 +23,7 @@ results) and report.
 
 **What it is.** A `providers` table entry becomes a Claude Code provider by
 setting `type: claude-code` — it inherits a template (`api: claude-cli`,
-`auth: none`, `command: claude`, `stream-supports-tool-calls: false`,
-`drives-tool-loop?: true`) the same way any provider inherits from a
+`auth: none`, `command: claude`, `stream-supports-tool-calls: false`) the same way any provider inherits from a
 manifest-declared template (`isaac.agent`, Providers, models, and effort).
 The entity's own **id** is whatever you name it — it does not have to be
 `claude-code` itself; a provider named `harbor` with `type: claude-code`
@@ -32,12 +31,6 @@ drives turns exactly like one literally named `claude-code`, and that
 distinction matters once you have more than one (see Multiple subscriptions,
 below). Fields this module adds on top of the generic provider schema:
 
-- `drives-tool-loop?` (boolean) — when true (the template default), Claude
-  Code runs its own native tool loop against Isaac's tools over MCP, and
-  this provider installs itself as the turn's `LoopDriver`; when false, the
-  provider is a plain shell-out completion engine and Isaac's own tool loop
-  parses `<tool_call>` text (see Tool-call syntax, below, and
-  `isaac.agent#turns-and-the-tool-loop` for the loop itself).
 - `command` (string, generic field, not claude-code-specific) — path to the
   `claude` binary; defaults to `claude` on `PATH`.
 - `env` (map) — a literal environment overlay for the spawned `claude`
@@ -54,12 +47,10 @@ below). Fields this module adds on top of the generic provider schema:
 ```
 config set providers.claude-code.type claude-code
 config set providers.claude-code.command claude
-config set providers.claude-code.drives-tool-loop? true
 ```
 
 **How to verify.** `config get providers.claude-code` (or
-`` `config:providers.claude-code.drives-tool-loop?` `` through
-`handbook__read`) shows the resolved entry, template defaults included.
+`handbook__read` shows the resolved entry, template defaults included.
 Point a `models` table entry's `provider` at this id and send a turn — the
 model string on that entry is passed straight through as `claude --model
 <string>`; Isaac never validates or hardcodes what names your `claude`
@@ -67,10 +58,9 @@ build accepts, so use whatever alias or full model id your CLI recognizes.
 
 ### Troubleshooting
 
-- **A turn on this provider never seems to call any tools.** Check
-  `drives-tool-loop?` — with it false, the provider is a bare completion
-  engine and tool calls only happen if the model writes the `<tool_call>`
-  text protocol and Isaac's own loop parses it.
+- **A turn on this provider never seems to call any tools.** Check the crew's
+  allowed tools. A tool-less request is a plain completion without MCP;
+  requests with tools use the per-turn MCP listener.
 - **You expect `isaac auth login --provider claude-code` to do something and
   it doesn't.** This template's `auth` is `none` — Isaac never manages this
   provider's credential. Login lives entirely in the `claude` binary itself,
@@ -138,29 +128,14 @@ Isaac).
 
 ## How a turn drives the claude process
 
-**What it is.** Every turn against this provider spawns **exactly one**
-`claude` process for its whole duration — a turn's tool-call cycles never
-respawn it. With `drives-tool-loop? true` the process runs `--print
---input-format stream-json --output-format stream-json --strict-mcp-config
---permission-mode bypassPermissions --mcp-config <path> --tools ""
---no-session-persistence`, where `<path>` names a tiny, per-turn MCP config
-naming an HTTP server at `http://127.0.0.1:<ephemeral-port>` with a random
-bearer nonce — Claude Code's own Streamable-HTTP MCP client talks to that
-loopback listener directly, no bridge process in between. The listener (and
-the turn's tool registry behind it) exists only for that one turn's
-lifetime and is torn down when the turn ends. Isaac's tools are exposed
-there under their own names (`exec__run`, `fs__read`, …); Claude Code
-prefixes them `mcp__isaac__<name>` internally, and the driver strips that
-prefix back off before recording the call, so the transcript always shows
-the Isaac-native name. Every tool call still executes through the turn's
-own tool function — nothing about *what* a tool call does changes because
-Claude Code, not Isaac's default loop, is driving.
-
-With `drives-tool-loop? false` (or once the driven path has fallen back —
-see below), the process instead runs `--print --output-format json --tools
-"" --no-session-persistence`, Isaac's own text `<tool_call>` protocol is
-taught in the system prompt, and Isaac's default tool loop parses and
-executes whatever the model wrote as text.
+**What it is.** A tool-using turn spawns one `claude` process for the
+whole turn using `--print --input-format stream-json --output-format
+stream-json --strict-mcp-config --permission-mode bypassPermissions
+--mcp-config <path> --tools "" --no-session-persistence`. The config names
+an HTTP listener on an ephemeral loopback port with a per-turn bearer nonce.
+Tool calls execute through Isaac's tool function and are recorded under their
+Isaac-native names. Tool-less requests run as plain completions (`--print
+--output-format json --tools "" --no-session-persistence`) without a listener.
 
 Isaac, not the CLI, owns the transcript and history: `--no-session-persistence`
 is always set, and each call replays prior turns as plain text inside the
@@ -168,36 +143,22 @@ stream-json user envelope (assistant history becomes "Assistant: …" prose,
 since stream-json input only accepts user-role envelopes) rather than
 relying on the CLI's own session/`--resume` machinery.
 
-**Falling back to the fence path.** A driven turn silently drops to the
-non-driven, text-protocol path — logged once as `:claude/driver-fallback`
-with a `:reason` — when: the CLI exits before emitting a first stream event
-(`:cli-start-failed`); the run ends with no result event or one reporting
-`is_error` (`:cli-error`); the MCP server the CLI reports for itself in its
-init event comes back `failed`, or `connected` with zero tools
-(`:mcp-failed`); or the fake-CLI test hook simulates an MCP-init failure
-(`:mcp-init`). A `pending` MCP status at init is **not** a failure — Claude
-Code can emit its init event before the tool server answers, and the turn
-proceeds normally once tools do arrive. Once a provider has fallen back for
-a turn, it stops claiming the tool loop for that call so Isaac's own loop
-picks up any tool calls the model still tries to make as text.
+**Provider weather.** A CLI start failure, error result, missing result, or
+failed MCP initialization suspends the turn as `:mcp-unavailable`; the resume
+sweep retries in driven mode. Repeated failures raise attention once the
+suspension attention window has elapsed. Pending MCP initialization is not
+failure: Claude Code can connect after emitting its init event.
 
 **The title side-call.** There is no documented `claude` flag to suppress
 its own per-invocation title-generation side call even with
 `--no-session-persistence`; every driven turn logs `:claude/title-side-call`
 (`:found false`) once, naming the accepted cost rather than hiding it.
 
-**How to verify.** `isaac logs` (`isaac.foundation`) for `:claude/mcp-status`
-(the CLI's own report of Isaac's own MCP server and tool count),
-`:claude/driver-exit` (one line per driven turn: exit code, whether a result
-event arrived, cycle count, and token totals), and `:claude/driver-fallback`
-when a turn dropped to the fence path.
+**How to verify.** `isaac logs` for `:claude/mcp-status`,
+`:claude/driver-exit`, and `:turn/suspended` with reason `:mcp-unavailable`.
 
 ### Troubleshooting
 
-- **A turn fell back to the fence path and you want to know why.** Read the
-  `:claude/driver-fallback` log entry's `:reason` and `:stderr` — it always
-  carries the CLI's own stderr or the result event's error text, never a
-  guess.
 - **The transcript shows a tool call under a name like
   `mcp__isaac__exec__run`.** It shouldn't reach the transcript that way —
   the driver strips the `mcp__isaac__` prefix before recording. Seeing the
@@ -250,36 +211,6 @@ cycle became the gauge.
   report (`:session/stamp-implausible` is the guard's own log line when it
   catches this in isaac.agent).
 
-## Tool-call syntax on the fence path
-
-**What it is.** On the non-driven (fence) path, the contract is
-`<tool_call>{"name":"<tool>","arguments":{...}}</tool_call>` in the model's
-own text. Claude's native `<invoke name="...">` / `<parameter
-name="...">` blocks and a bare `{"name":...,"arguments":...}` inside a
-markdown code fence are both also accepted and executed the same way — this
-covers real, observed model drift, not just the literal contract text. A
-call-shaped block (anything that looks like it's trying to be one of these
-three forms) that still fails to parse gets **exactly one** corrective
-re-prompt telling the model to use the literal `<tool_call>` form; a second
-failure ends the turn with `:error :tool-protocol` rather than guessing at
-a verdict from broken text. `:tool-protocol` also carries `:unavailable?
-true` with a one-minute `:retry-after-ms`, so a hail delivered into it
-defers instead of burning a delivery attempt or counting toward
-dead-letter (`hails-never-die`).
-
-### Troubleshooting
-
-- **A turn ended with `:error :tool-protocol`.** The model emitted a
-  call-shaped block twice in a row that couldn't be parsed either time —
-  check the log for `:claude-cli/tool-syntax-drift` (the first, warned
-  attempt) followed by `:claude-cli/tool-protocol` (the second, logged as
-  an error). This is a model-output problem, not a config one.
-- **Text that looks like a stray, half-finished tool call shows up in the
-  transcript.** It shouldn't — text following a successfully parsed call
-  block is deliberately not persisted as assistant content, to avoid
-  recording a model's fabricated narration of what it thinks the result
-  will be.
-
 ## Auth failures and login expiry
 
 **What it is.** This provider classifies what the CLI itself says about a
@@ -288,14 +219,8 @@ result event's own error text are checked against known auth phrases
 (`not logged in`, `please run /login`, `invalid api key`, `oauth session/
 token expired`, `failed to authenticate`, `no credentials`) and known
 limit phrases (`session limit`, `usage limit`, `rate limit`, `too many
-requests`, `quota exceeded`, `credit balance`). A driven turn that hits
-either mid-stream is **weather**, not a fence-fallback trigger or a hard
-failure — re-running the same request without MCP would only meet the same
-wall. A limit classifies `:rate-limited`/`:wall`; a login failure
-classifies `:auth-failed`/`:auth`. On the older non-driven path, the same
-auth phrases (plus a bare "unauthorized") mark the response
-`:unavailable? true :reason :auth` so a delivered hail defers rather than
-dead-lettering. What actually happens next with that classification —
+requests`, `quota exceeded`, `credit balance`). A turn that hits either is **weather**, not a hard failure. A limit classifies `:rate-limited`/`:wall`; a login failure
+classifies `:auth-failed`/`:auth`. Plain completions classify these errors the same way. What actually happens next with that classification —
 suspending the turn, scheduling a resume, posting an attention bulletin —
 is the drive's job, not this provider's; see `isaac.agent#turns-and-the-
 tool-loop` and `isaac.agent#comms-and-delivery`.

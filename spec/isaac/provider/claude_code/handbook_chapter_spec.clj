@@ -15,7 +15,7 @@
    isaac.foundation.module.discovery/builtin-index alone would never include it — that
    index is filtered to builtin manifests only. Composing a schema that
    actually reflects what this chapter documents (its own contributed
-   :drives-tool-loop?/:env/:forward-env provider-template schema fields,
+   :env/:forward-env provider-template schema fields,
    merged alongside foundation's and agent's builtin schema) means finding
    this module's own manifest by id and folding it in explicitly, rather
    than declaring it builtin just to satisfy this spec."

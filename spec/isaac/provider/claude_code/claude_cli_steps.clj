@@ -73,15 +73,6 @@
           (when (str/blank? prompt)
             (swap! failures conj "expected conversation prompt on stdin"))
 
-          (= arg "(system prompt contains protocol contract)")
-          (let [system (system-prompt-arg argv)]
-            (when-not (and system (str/includes? system claude-cli/tool-protocol-contract))
-              (swap! failures conj "system prompt missing tool protocol contract")))
-
-          (= arg "(user prompt does not contain protocol contract)")
-          (when (and prompt (str/includes? prompt claude-cli/tool-protocol-contract))
-            (swap! failures conj "tool protocol contract leaked into user prompt"))
-
           (= arg "(system prompt contains soul text)")
           (let [system (system-prompt-arg argv)]
             (when-not (and system (str/includes? system "Think hard."))
@@ -210,17 +201,6 @@
   (let [chunks (parse-stream-chunks raw)]
     (g/should (pos? (count chunks)))
     (install-stub! (constantly {:exit 0 :out (stream-json-out chunks) :err ""}))))
-
-(defn claude-binary-stubbed-tool-then-text []
-  (let [state (atom 0)]
-    (install-stub!
-      (fn [_]
-        (case (swap! state inc)
-          1 (stub-return (str "<tool_call>"
-                              (json/generate-string {:name "exec" :arguments {:command "ls"}})
-                              "</tool_call>"))
-          2 (stub-return "done")
-          (stub-return "done"))))))
 
 (defn claude-binary-stubbed-json-with-usage [text input output]
   (install-stub!
@@ -453,9 +433,6 @@
 (defgiven #"the claude binary is stubbed to stream-json with terminal usage (.+)"
   isaac.provider.claude-code.claude-cli-steps/claude-binary-stubbed-stream-with-usage)
 
-(defgiven "the claude binary is stubbed to first return tool call text for exec, then \"done\""
-  isaac.provider.claude-code.claude-cli-steps/claude-binary-stubbed-tool-then-text)
-
 (defgiven "the claude binary is stubbed to return in sequence:"
   isaac.provider.claude-code.claude-cli-steps/claude-binary-stubbed-sequence)
 
@@ -558,11 +535,9 @@
 
 (defn fake-claude-code-scripted [table]
   (declare-module!)
-  (g/dissoc! :feature-config)
   (api/register! :claude-cli claude-cli/make)
   (g/update! :provider-configs #(assoc (or % {}) "claude-code" {:api "claude-cli"
                                                                   :command "claude"
-                                                                  :drives-tool-loop? true
                                                                   :stream-supports-tool-calls false}))
   (claude-cli/clear-invocations!)
   (claude-cli/clear-stub!)
@@ -580,7 +555,7 @@
   (claude-cli/report-tools-in-result-only!))
 
 (defn fake-claude-code-fails-mcp-init []
-  (claude-cli/fail-mcp-init!))
+  (claude-cli/simulate-mcp-init-failure!))
 
 (defn fake-claude-code-exits-before-streaming [code stderr]
   (claude-cli/exit-before-streaming! (if (string? code) (parse-long code) code) stderr))
