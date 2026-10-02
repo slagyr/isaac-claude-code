@@ -108,6 +108,10 @@
                     (some #(= % "--resume") argv))
             (swap! failures conj "found --continue or --resume in argv"))
 
+          (= arg "(no --mcp-config)")
+          (when (contains? arg-map "--mcp-config")
+            (swap! failures conj "found --mcp-config in argv"))
+
           (= arg "(no ANTHROPIC_API_KEY in env)")
           (when (contains? env "ANTHROPIC_API_KEY")
             (swap! failures conj "ANTHROPIC_API_KEY present in subprocess env"))

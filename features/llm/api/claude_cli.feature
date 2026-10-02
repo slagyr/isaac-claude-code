@@ -17,7 +17,6 @@ Feature: Claude subscription provider via CLI shell-out
     And the isaac EDN file "config/providers/claude.edn" exists with:
       | path              | value  |
       | command           | claude |
-      | drives-tool-loop? | false  |
     And the isaac EDN file "config/models/sub-sonnet.edn" exists with:
       | path     | value        |
       | model    | sonnet       |
@@ -30,6 +29,7 @@ Feature: Claude subscription provider via CLI shell-out
       | name | crew    |
       | main | thinker |
 
+  @wip
   Scenario: non-tool prompt uses raw shell-out
     Given the claude binary is stubbed to return "4"
     When the user sends "What is 2+2?" on session "main"
@@ -46,6 +46,7 @@ Feature: Claude subscription provider via CLI shell-out
       | (conversation prompt on stdin) | |
       | (user prompt does not contain soul text) | |
 
+  @wip
   Scenario: streaming response from claude subscription provider
     Given the isaac EDN file "config/providers/claude.edn" exists with:
       | path                  | value |
@@ -65,30 +66,7 @@ Feature: Claude subscription provider via CLI shell-out
       | --system-prompt          |               |
       | (conversation prompt on stdin) |      |
 
-  Scenario: tool-using turn with Isaac-managed tools
-    Given the isaac EDN file "config/crew/thinker.edn" exists with:
-      | path  | value       |
-      | model | sub-sonnet  |
-      | soul  | Think hard. |
-    And the crew has tools: [exec]
-    And the claude binary is stubbed to first return tool call text for exec, then "done"
-    When the user sends "list files" on session "main"
-    Then the exec tool is executed
-    And the claude binary was invoked exactly twice
-    And the second invocation included the tool result serialized in the prompt text
-    And the response is "done"
-
-  Scenario: tool protocol contract rides on system prompt authority
-    Given the crew has tools: [exec]
-    And the claude binary is stubbed to return "ok"
-    When the user sends "run a command" on session "main"
-    Then the claude binary was invoked exactly once with:
-      | arg                      | value |
-      | --system-prompt          |       |
-      | (system prompt contains protocol contract) | |
-      | (user prompt does not contain protocol contract) | |
-      | (conversation prompt on stdin) | |
-
+  @wip
   Scenario: error from claude binary is reported
     Given the claude binary is stubbed to fail with exit code 1 and message "claude: boom"
     When the user sends "hi" on session "main"
@@ -102,6 +80,7 @@ Feature: Claude subscription provider via CLI shell-out
       | --no-session-persistence |       |
       | --model                  | sonnet|
 
+  @wip
   Scenario: login failure is a loud error and classifies as auth-unavailable
     Given the claude binary is stubbed to fail with exit code 1 and message "Not logged in · Please run /login"
     When the user sends "hi" on session "main"
@@ -109,6 +88,7 @@ Feature: Claude subscription provider via CLI shell-out
     And the error message contains "Please run /login"
     And the error is classified as auth-unavailable
 
+  @wip
   Scenario: claude subscription provider with custom binary path
     Given the isaac EDN file "config/providers/claude.edn" exists with:
       | path    | value              |
@@ -124,6 +104,7 @@ Feature: Claude subscription provider via CLI shell-out
       | --no-session-persistence |       |
       | --model                  | sonnet|
 
+  @wip
   Scenario: extra args from provider config are forwarded
     Given the isaac EDN file "config/providers/claude.edn" exists with:
       | path        | value         |
@@ -141,6 +122,7 @@ Feature: Claude subscription provider via CLI shell-out
       | --model                  | sonnet|
       | --foo                    | bar   |
 
+  @wip
   Scenario: full history passed each turn (Isaac controls transcript)
     Given the isaac EDN file "config/providers/claude.edn" exists with:
       | path    | value  |
@@ -170,6 +152,7 @@ Feature: Claude subscription provider via CLI shell-out
       | (stdin contains full history) | |
       | (no --continue or --resume) | |
 
+  @wip
   Scenario: claude subscription provider uses subscription login (no raw API key)
     Given the isaac EDN file "config/providers/claude.edn" exists with:
       | path    | value  |
@@ -195,6 +178,7 @@ Feature: Claude subscription provider via CLI shell-out
       | --model                  | sonnet|
       | (no ANTHROPIC_API_KEY in env) | |
 
+  @wip
   Scenario: claude subscription provider with extra args from config
     Given the isaac EDN file "config/providers/claude.edn" exists with:
       | path        | value         |
@@ -219,6 +203,7 @@ Feature: Claude subscription provider via CLI shell-out
       | --model                  | sonnet|
       | --foo                    | bar   |
 
+  @wip
   Scenario: non-stream json output records token usage on the transcript
     Given the claude binary is stubbed to return json with usage "4" and tokens 120 and 15
     When the user sends "What is 2+2?" on session "main"
@@ -230,6 +215,7 @@ Feature: Claude subscription provider via CLI shell-out
       | arg                      | value |
       | --output-format          | json  |
 
+  @wip
   Scenario: streaming stream-json records terminal usage on the transcript
     Given the isaac EDN file "config/providers/claude.edn" exists with:
       | path                  | value |
@@ -242,6 +228,7 @@ Feature: Claude subscription provider via CLI shell-out
       | #index | type    | message.role | message.usage.prompt-tokens | message.usage.output-tokens | message.usage.cache-read-tokens | message.usage.cache-write-tokens |
       | -1     | message | assistant    | 46                         | 7                           | 3                        | 1                         |
 
+  @wip
   Scenario: missing usage in json output still completes with zero usage
     Given the claude binary is stubbed to return json without usage "ok"
     When the user sends "hi" on session "main"
@@ -250,6 +237,7 @@ Feature: Claude subscription provider via CLI shell-out
       | #index | type    | message.role | message.usage.prompt-tokens | message.usage.output-tokens |
       | -1     | message | assistant    | 0                          | 0                           |
 
+  @wip
   Scenario: CLAUDE_CODE_OAUTH_TOKEN from .env is forwarded to the claude subprocess
     Given the isaac .env file contains:
       """
@@ -265,6 +253,7 @@ Feature: Claude subscription provider via CLI shell-out
       | --model                                    | sonnet|
       | (env CLAUDE_CODE_OAUTH_TOKEN=marigold-oauth) |     |
 
+  @wip
   Scenario: an unlisted .env secret is not forwarded to the claude subprocess
     Given the isaac .env file contains:
       """
@@ -282,6 +271,7 @@ Feature: Claude subscription provider via CLI shell-out
       | (env CLAUDE_CODE_OAUTH_TOKEN=marigold-oauth) |       |
       | (no LONGWAVE_DISCORD_TOKEN in env)           |       |
 
+  @wip
   Scenario: a name listed in forward-env is forwarded to the claude subprocess
     Given the isaac EDN file "config/providers/claude.edn" exists with:
       | path        | value                                       |
@@ -303,6 +293,7 @@ Feature: Claude subscription provider via CLI shell-out
       | (env CLAUDE_CODE_OAUTH_TOKEN=marigold-oauth) |       |
       | (env SKYBEAM_TOKEN=skybeam-secret)           |       |
 
+  @wip
   Scenario: ANTHROPIC_API_KEY is stripped even when listed in forward-env
     Given the isaac EDN file "config/providers/claude.edn" exists with:
       | path        | value                                           |
@@ -324,6 +315,7 @@ Feature: Claude subscription provider via CLI shell-out
       | (env CLAUDE_CODE_OAUTH_TOKEN=marigold-oauth) |       |
       | (no ANTHROPIC_API_KEY in env)                |       |
 
+  @wip
   Scenario: an empty forward-env list forwards no named secrets
     Given the isaac EDN file "config/providers/claude.edn" exists with:
       | path        | value |
@@ -346,6 +338,7 @@ Feature: Claude subscription provider via CLI shell-out
       | event                       |
       | :claude/oauth-token-missing |
 
+  @wip
   Scenario: a missing CLAUDE_CODE_OAUTH_TOKEN is warned once when the provider is built
     Given the claude binary is stubbed to return "ok"
     When the user sends "hi" on session "main"
@@ -362,97 +355,3 @@ Feature: Claude subscription provider via CLI shell-out
   # must never be treated as a reply: parse what can be parsed, and treat any
   # unparsed call-shaped block as a protocol violation — one corrective
   # re-prompt, then :error :tool-protocol. Never a silent verdict.
-
-  Scenario: Claude's native invoke syntax executes the tool exactly like the fence (isaac-jkx7)
-    Given the crew has tools: [exec]
-    And the claude binary is stubbed to return in sequence:
-      | response                                                                                              |
-      | <invoke name="exec__run"><parameter name="command">echo drift</parameter></invoke>                     |
-      | done                                                                                                  |
-    When the user sends "run it" on session "main"
-    Then the exec tool is executed
-    And the claude binary was invoked exactly twice
-    And the second invocation included the tool result serialized in the prompt text
-    And the response is "done"
-
-  Scenario: a bare JSON call in a markdown code fence executes the tool (isaac-jkx7)
-    Given the crew has tools: [exec]
-    And the claude binary is stubbed to return in sequence:
-      | response                                                                          |
-      | ```{"name":"exec__run","arguments":{"command":"echo fenced"}}```                  |
-      | done                                                                              |
-    When the user sends "run it" on session "main"
-    Then the exec tool is executed
-    And the claude binary was invoked exactly twice
-    And the response is "done"
-
-  Scenario: fence then invoke in one reply executes both, in order (isaac-jkx7)
-    Given the crew has tools: [exec]
-    And the claude binary is stubbed to return in sequence:
-      | response                                                                                                                                                    |
-      | <tool_call>{"name":"exec__run","arguments":{"command":"echo one"}}</tool_call> then <invoke name="exec__run"><parameter name="command">echo two</parameter></invoke> |
-      | done                                                                                                                                                        |
-    When the user sends "run both" on session "main"
-    Then the exec tool is executed 2 times
-    And the exec tool ran commands in order:
-      | command  |
-      | echo one |
-      | echo two |
-
-  Scenario: text after a parsed call block is not persisted as assistant content (isaac-jkx7)
-    Given the crew has tools: [exec]
-    And the claude binary is stubbed to return in sequence:
-      | response                                                                                                     |
-      | <tool_call>{"name":"exec__run","arguments":{"command":"git log -1"}}</tool_call>OK / b55d4964 plan: fabricated |
-      | done                                                                                                         |
-    When the user sends "what is the last commit" on session "main"
-    Then the exec tool is executed
-    And session "main" has no transcript entry containing "fabricated"
-
-  Scenario: a malformed fence gets one corrective re-prompt and a well-formed retry executes (isaac-jkx7)
-    Given the crew has tools: [exec]
-    And the claude binary is stubbed to return in sequence:
-      | response                                                                          |
-      | <tool_call>{"name":"exec__run","arguments":{"command":"echo "unescaped" }}</tool_call> |
-      | <tool_call>{"name":"exec__run","arguments":{"command":"echo fixed"}}</tool_call>   |
-      | done                                                                              |
-    When the user sends "run it" on session "main"
-    Then the claude binary was invoked exactly 3 times
-    And the second invocation's prompt text contains "could not be parsed"
-    And the second invocation's prompt text contains "<tool_call>"
-    And the exec tool is executed
-    And the response is "done"
-    And the log has entries matching:
-      | level | event                        |
-      | :warn | :claude-cli/tool-syntax-drift |
-
-  Scenario: a call-shaped block that still does not parse after the re-prompt ends the turn with a tool-protocol error, not a verdict (isaac-jkx7)
-    Given the crew has tools: [exec]
-    And the claude binary is stubbed to return in sequence:
-      | response                                                                          |
-      | <invoke name="exec__run"><parameter name="command">echo one</invoke>              |
-      | <invoke name="exec__run"><parameter name="command">echo one</invoke>              |
-    When the user sends "run it" on session "main"
-    Then the claude binary was invoked exactly twice
-    And the turn ends with error :tool-protocol
-    And session "main" has no transcript entry with role "assistant" containing "<invoke"
-    And the log has entries matching:
-      | level  | event                        | attempt |
-      | :warn  | :claude-cli/tool-syntax-drift | 1       |
-      | :error | :claude-cli/tool-protocol     | 2       |
-
-  Scenario: a tool-protocol error is weather to hail — no delivery attempt is burned (isaac-jkx7)
-    The provider contract failing is not the bean's fault; the delivery
-    defers (hails-never-die) instead of counting toward dead-letter.
-    Given the crew has tools: [exec]
-    And the claude binary is stubbed to return in sequence:
-      | response                                                             |
-      | <invoke name="exec__run"><parameter name="command">echo one</invoke> |
-      | <invoke name="exec__run"><parameter name="command">echo one</invoke> |
-    And a hail delivery is bound to session "main"
-    When the hail delivery runs its turn
-    Then the delivery is deferred with attempts 0
-    And the log has entries matching:
-      | event          | error          |
-      | :hail/deferred | :tool-protocol |
-

@@ -150,40 +150,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | --strict-mcp-config       |             |
       | --no-session-persistence  |             |
 
-  Scenario: an older CLI or a failed MCP init falls back to the fence path for that turn
-    Given a fake Claude Code on the path scripted with:
-      | cycle | kind | payload |
-      | 1     | text | fenced  |
-    And the fake Claude Code fails MCP initialization
-    When the user sends "fallback" on session "main"
-    Then the response is "fenced"
-    And the log has entries matching:
-      | event                   | provider | reason   |
-      | :claude/driver-fallback | claude   | mcp-init |
-    And the fake Claude Code was invoked with:
-      | arg              | value |
-      | --print          |       |
-      | --output-format  | json  |
-
-  Scenario: a CLI that exits before its first stream event falls back to the fence path with the stderr logged (isaac-nni3)
-    Given a fake Claude Code on the path scripted with:
-      | cycle | kind | payload |
-      | 1     | text | fenced  |
-    And the fake Claude Code exits 1 before streaming with stderr "Error: When using --print, --output-format=stream-json requires --verbose"
-    When the user sends "fallback" on session "main"
-    Then the response is "fenced"
-    And the log has entries matching:
-      | event                   | provider | reason           | stderr                           |
-      | :claude/driver-fallback | claude   | cli-start-failed | #"(?s).*stream-json requires --verbose.*" |
-    And the fake Claude Code was invoked with:
-      | arg              | value       |
-      | --output-format  | stream-json |
-      | --verbose        |             |
-    And the fake Claude Code was invoked with:
-      | arg              | value |
-      | --print          |       |
-      | --output-format  | json  |
-
   Scenario: text that arrives only as content_block_delta stream events becomes the reply (isaac-0lyh)
     Claude Code 2.1.236 with --include-partial-messages emits the reply as
     stream_event/content_block_delta/text_delta chunks, then message events,
@@ -205,20 +171,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
     And the log has entries matching:
       | event               | provider | exit-code | result-event |
       | :claude/driver-exit | claude   | 0         | true         |
-
-  Scenario: a result event with is_error, or an exit with no result event, falls back with the CLI's stderr logged
-    Given a fake Claude Code on the path scripted with:
-      | cycle | kind         | payload                               |
-      | 1     | error_result | MCP server "isaac" failed to connect  |
-    When the user sends "fallback please" on session "main"
-    Then the log has entries matching:
-      | event                   | provider | reason    | stderr                        |
-      | :claude/driver-exit     | claude   |           |                               |
-      | :claude/driver-fallback | claude   | cli-error | #"(?s).*failed to connect.*" |
-    And the fake Claude Code was invoked with:
-      | arg              | value |
-      | --print          |       |
-      | --output-format  | json  |
 
   Scenario: a session limit after the cycles have run is weather, not a fence fallback (isaac-2sxf)
     The seat's five-hour window closed mid-turn. Running the CLI again without
@@ -255,6 +207,119 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
     And the log has no entries matching:
       | event                   |
       | :claude/driver-fallback |
+
+  @wip
+  Scenario: MCP failing to come up suspends the turn as weather, not a fenced reply (isaac-izc1)
+    Fence mode is gone: a driven turn that can't bring MCP up doesn't fall back
+    to a hand-parsed text reply and it doesn't end :llm-error either. It's
+    provider weather like any other wall, classified :mcp-unavailable, with a
+    single CLI invocation — no second, fenced attempt.
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind | payload |
+      | 1     | text | unused  |
+    And the fake Claude Code fails MCP initialization
+    When the user sends "run it" on session "main"
+    Then the turn result is "suspended"
+    And a turn marker exists for session "main" with:
+      | key       | value            |
+      | suspended | true             |
+      | reason    | :mcp-unavailable |
+    And session "main" has no transcript entry containing "unused"
+    And the fake Claude Code was invoked exactly once
+    And the log has no entries matching:
+      | event                   |
+      | :claude/driver-fallback |
+
+  @wip
+  Scenario: the suspended turn resumes in driven mode once MCP initializes cleanly (isaac-izc1)
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind | payload |
+      | 1     | text | unused  |
+    And the fake Claude Code fails MCP initialization
+    When the user sends "run it" on session "main" at "2026-04-21T10:00:00Z"
+    Then a turn marker exists for session "main" with:
+      | key       | value            |
+      | suspended | true             |
+      | reason    | :mcp-unavailable |
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind     | payload                                             |
+      | 1     | tool_use | {"name":"exec__run","input":{"command":"echo hi"}}  |
+      | 2     | text     | hi came back                                        |
+    When the resume sweep runs at "2026-04-21T10:01:00Z"
+    And the turn ends on session "main"
+    Then session "main" has transcript matching:
+      | type       | message.role | message.content |
+      | toolCall   |              |                 |
+      | toolResult |              |                 |
+      | message    | assistant    | hi came back    |
+    And the fake Claude Code was invoked with:
+      | arg                 | value       |
+      | --strict-mcp-config |             |
+      | --mcp-config        | #".*\.json" |
+    And no turn marker exists for session "main"
+
+  @wip
+  Scenario: a weekly usage limit is weather too, with no prior conditions (isaac-izc1)
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind         | payload                                                    |
+      | 1     | error_result | You've hit your weekly usage limit · resets Mon 5am (UTC)  |
+    When the user sends "run it" on session "main"
+    Then the turn result is "suspended"
+    And a turn marker exists for session "main" with:
+      | key       | value |
+      | suspended | true  |
+      | reason    | :wall |
+    And the fake Claude Code was invoked exactly once
+
+  @wip
+  Scenario: repeated MCP failure escalates to an attention notice after the retry budget (isaac-izc1)
+    Given config:
+      | key                          | value       |
+      | turn.suspended-attention-ms  | 0           |
+      | attention.notify.comm        | discord     |
+      | attention.notify.target      | boiler-room |
+    And a fake Claude Code on the path scripted with:
+      | cycle | kind | payload |
+      | 1     | text | unused  |
+    And the fake Claude Code fails MCP initialization
+    When the user sends "run it" on session "main" at "2026-04-21T10:00:00Z"
+    Then a turn marker exists for session "main" with:
+      | key           | value            |
+      | suspended     | true             |
+      | reason        | :mcp-unavailable |
+      | suspend-count | 1                |
+    Given the resume sweep runs at "2026-04-21T10:01:00Z"
+    Then a turn marker exists for session "main" with:
+      | key              | value            |
+      | suspended        | true             |
+      | reason           | :mcp-unavailable |
+      | suspend-count    | 2                |
+      | attention-posted | true             |
+    And the only file in "comm/delivery/pending" EDN contains:
+      | path    | value                      |
+      | comm    | :discord                   |
+      | target  | boiler-room                |
+      | content | contains "main" and "mcp"  |
+
+  @wip
+  Scenario: a tool-less completion still works without MCP (isaac-izc1)
+    A crew with no allowed tools has nothing for MCP to serve; the turn is a
+    plain completion and never wires up the per-turn listener at all.
+    Given the isaac EDN file "config/crew/scribe.edn" exists with:
+      | path  | value              |
+      | model | sub-sonnet         |
+      | soul  | Summarize plainly. |
+    And the following sessions exist:
+      | name   | crew   |
+      | digest | scribe |
+    And a fake Claude Code on the path scripted with:
+      | cycle | kind | payload  |
+      | 1     | text | the gist |
+    When the user sends "summarize this" on session "digest"
+    Then the response is "the gist"
+    And the fake Claude Code was invoked with:
+      | arg               | value |
+      | (no --mcp-config) |       |
 
   Scenario: a turn walled on its last request keeps the usage of the cycles that finished (isaac-ewxh)
     Seventy-nine cycles of work are not free because the eightieth request met
@@ -348,21 +413,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | toolCall   |              | exec__run |
       | toolResult |              |           |
       | message    | assistant    |           |
-
-  Scenario: an init event that reports the isaac MCP server failed falls back and logs the server status (isaac-lrvb)
-    Given a fake Claude Code on the path scripted with:
-      | cycle | kind       | payload                                                          |
-      | 1     | mcp_status | {"mcp_servers":[{"name":"isaac","status":"failed"}],"tools":[]}   |
-      | 1     | text       | I have no tools                                                  |
-    When the user sends "run it" on session "main"
-    Then the log has entries matching:
-      | event                   | provider | servers                             | tools |
-      | :claude/mcp-status      | claude   | #"(?s).*isaac.*failed.*"            | 0     |
-      | :claude/driver-fallback | claude   |                                     |       |
-    And the fake Claude Code was invoked with:
-      | arg              | value |
-      | --print          |       |
-      | --output-format  | json  |
 
   Scenario: the turn's nonce and listener are private to the driven turn, never the server's own port or token (isaac-mbnb)
     Given the isaac EDN file "config/isaac.edn" exists with:
