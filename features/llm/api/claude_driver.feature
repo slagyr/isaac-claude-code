@@ -1,19 +1,18 @@
 Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
 
-  With `:drives-tool-loop? true` on the claude provider, a turn spawns one
-  `claude` process (stream-json in/out, no claude tools, `--mcp-config`
-  pointing straight at THIS turn's own loopback listener) and lets Claude
-  Code run the native tool loop. Every tool call still executes through the drive's tool
-  function via the per-turn MCP registry (isaac-zocg), so the transcript,
-  comm events, and per-cycle token stamps are identical to the default loop
-  (isaac-1sdl). Isaac owns the transcript: one process per turn, history
-  replayed as text, thinking persisted as reckoning, compaction between
-  turns only.
+  A claude-code turn spawns one `claude` process (stream-json in/out, no
+  claude tools, `--mcp-config` pointing straight at THIS turn's own loopback
+  listener) and lets Claude Code run the native tool loop. There is no fence
+  path and no `:drives-tool-loop?` setting (isaac-izc1): a failure to come up
+  is provider weather, retried in driven mode. Every tool call still executes
+  through the drive's tool function via the per-turn MCP registry
+  (isaac-zocg), so the transcript, comm events, and per-cycle token stamps
+  are identical to the default loop (isaac-1sdl). Isaac owns the transcript:
+  one process per turn, history replayed as text, thinking persisted as
+  reckoning, compaction between turns only.
   Decisions (2026-09-03, Micah): one CLI process per turn; thinking blocks
   persist as reckoning (excluded from prompt and recall); title side call —
-  find the switch or log its cost; fallback to the fence path for a turn
-  when the CLI lacks stream-json input or MCP init fails, logged, never a
-  failed turn.
+  find the switch or log its cost.
 
   Background:
     Given an Isaac root at "target/test-state"
@@ -23,7 +22,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
     And the isaac EDN file "config/providers/claude-code.edn" exists with:
       | path              | value  |
       | command           | claude |
-      | drives-tool-loop? | true   |
     And the isaac EDN file "config/models/sub-sonnet.edn" exists with:
       | path     | value  |
       | model    | sonnet |
@@ -434,7 +432,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | path              | value       |
       | type              | claude-code |
       | command           | claude      |
-      | drives-tool-loop? | true        |
     And the isaac EDN file "config/models/harbor-sonnet.edn" exists with:
       | path     | value  |
       | model    | sonnet |
@@ -642,14 +639,12 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | path                  | value             |
       | type                  | claude-code       |
       | command               | claude            |
-      | drives-tool-loop?     | true              |
       | env.CLAUDE_CONFIG_DIR | /tmp/cc-a         |
       | env.ANTHROPIC_API_KEY | sk-should-be-gone |
     And the isaac EDN file "config/providers/claude-b.edn" exists with:
       | path                  | value       |
       | type                  | claude-code |
       | command               | claude      |
-      | drives-tool-loop?     | true        |
       | env                   | {"CLAUDE_CONFIG_DIR" "/tmp/cc-b"} |
     And the isaac EDN file "config/models/sonnet-a.edn" exists with:
       | path     | value    |
