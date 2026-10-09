@@ -607,7 +607,7 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
     result. A two-cycle capture: assistant prompts 33466 then 33588, result
     total 67054. The result's sum is turn spend, never the gauge. The gauge is
     the final request's own prompt size: a valid final report wins over the
-    first-cycle gauge (isaac-o13p). Yopp 2026-09-28 17:21Z stored 4,757,749 on
+    first-cycle gauge (isaac-o13p). A deployment on 2026-09-28 17:21Z stored 4,757,749 on
     a 1,000,000 window and compacted a 63,819-token transcript.
     Given a fake Claude Code on the path scripted with:
       | cycle | kind         | payload                                                                                 |

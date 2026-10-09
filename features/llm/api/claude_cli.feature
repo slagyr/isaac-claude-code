@@ -332,7 +332,7 @@ Feature: Claude subscription provider via CLI shell-out
   # --- isaac-jkx7: tool-call syntax drift on the fence path ------------------
   # The contract is <tool_call>{json}</tool_call>. Models drift: Claude's native
   # <invoke name="X"><parameter name="k">v</parameter></invoke> (opus, 09-03),
-  # bare {"name":…,"arguments":…} in a markdown code fence (yopp, 09-17), or a
+  # bare {"name":…,"arguments":…} in a markdown code fence (field, 09-17), or a
   # <tool_call> whose JSON does not parse (isaac-work-2, 09-03). A drifted call
   # must never be treated as a reply: parse what can be parsed, and treat any
   # unparsed call-shaped block as a protocol violation — one corrective
