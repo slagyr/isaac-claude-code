@@ -534,6 +534,9 @@
         (:rows table)))
 
 (defn fake-claude-code-scripted [table]
+  ;; The preceding When runs asynchronously. Finish it before replacing its fake
+  ;; script or clearing its captured stdin for the next turn.
+  (session-steps/await-turn!)
   (declare-module!)
   (api/register! :claude-cli claude-cli/make)
   (g/update! :provider-configs #(assoc (or % {}) "claude-code" {:api "claude-cli"
