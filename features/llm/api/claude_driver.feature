@@ -679,3 +679,19 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | arg                                | value |
       | (env CLAUDE_CONFIG_DIR=/tmp/cc-b)  |       |
 
+
+  @wip
+  Scenario: the CLI's prompt-too-long result is a context overflow, not a generic error (isaac-166j)
+    isaac-work-2 and -3 dead-lettered five hails on 2026-09-20 on a CLI result
+    with terminal_reason prompt_too_long, api_error_status 400 and zero usage,
+    logged as a generic :llm-error. It is the CLI's form of a provider's
+    prompt-length 400: the drive compacts and retries once, and an overflow
+    that survives the retry parks the turn as context-exhausted.
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind         | payload                                                                                                          |
+      | 1     | error_result | Prompt is too long · the request is ~1262766 tokens (limit 1000000) but this conversation is only ~596414 tokens |
+    When the user sends "run it" on session "main"
+    Then the turn result is unavailable with retry-after-ms 300000 and reason context-exhausted
+    And the log has entries matching:
+      | level | event                    | session |
+      | :warn | :drive/context-exhausted | main    |
