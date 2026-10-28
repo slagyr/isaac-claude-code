@@ -3,8 +3,9 @@ Feature: Claude subscription quota from the CLI's own rate-limit events
   (isaac-agent's :isaac.agent/quota-meter berth). The source is the
   rate_limit_event the claude CLI emits on every turn: it carries each
   window's utilization and reset time for the whole account, whatever
-  else spends it. The meter keeps the latest event per provider id, so a
-  report is as fresh as that provider's last turn — checked_at says when.
+  else spends it. The meter keeps the latest event per provider id on disk,
+  so every process sees it; checked_at says when it was seen. With no
+  snapshot, or one older than 10 minutes, it asks the CLI directly.
 
   Why not Anthropic's usage endpoint: it requires the user:profile scope,
   and the long-lived setup tokens these providers authenticate with
@@ -12,8 +13,7 @@ Feature: Claude subscription quota from the CLI's own rate-limit events
   (checked 2026-10-28).
 
   unifiedWindows utilization is a 0–1 fraction; the report carries
-  percent (fraction × 100). A provider that has not run a turn since the
-  server started reports :unknown.
+  percent (fraction × 100).
 
   Background:
     Given an Isaac root at "target/test-state"
@@ -76,13 +76,53 @@ Feature: Claude subscription quota from the CLI's own rate-limit events
       | providers[0].windows[1].used_percent | 100.0 |
       | providers[0].windows[1].limited      | true  |
 
-  Scenario: Before its first turn a provider's quota is unknown
+  # isaac-<probe>: a snapshot lives on disk under the Isaac root, so the
+  # server, a CLI turn and the next boot all read the same one; with no
+  # snapshot (or one older than 10 minutes) the meter asks the CLI itself —
+  # one minimal call, no tools, the provider's own login.
+
+  @wip
+  Scenario: The latest snapshot outlives the process that saw it
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind       | payload |
+      | 1     | rate_limit | {"status":"allowed","resetsAt":1793192400,"rateLimitType":"five_hour","unifiedWindows":{"five_hour":{"utilization":0.31,"resetsAt":1793192400},"seven_day":{"utilization":0.12,"resetsAt":1793610000}}} |
+      | 1     | text       | done    |
+    When the user sends "hi" on session "main"
+    And the Claude quota memory is cleared
+    And the tool "provider__quota" is called with:
+      | provider | claude-code |
+    Then the tool result JSON has:
+      | path                                 | value |
+      | providers[0].status                  | ok    |
+      | providers[0].windows[0].used_percent | 31.0  |
+    And the fake Claude Code was invoked exactly once
+
+  @wip
+  Scenario: With no snapshot the meter asks the CLI once
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind       | payload |
+      | 1     | rate_limit | {"status":"allowed","resetsAt":1793192400,"rateLimitType":"five_hour","unifiedWindows":{"five_hour":{"utilization":0.27,"resetsAt":1793192400},"seven_day":{"utilization":0.09,"resetsAt":1793610000}}} |
+      | 1     | text       | ok      |
     When the tool "provider__quota" is called with:
       | provider | claude-code |
     Then the tool result is not an error
     And the tool result JSON has:
-      | path                  | value             |
-      | providers[0].provider | claude-code       |
-      | providers[0].status   | unknown           |
-      | providers[0].error    | #"(?i).*no turn.*" |
-      | providers[0].windows  | []                |
+      | path                                 | value       |
+      | providers[0].provider                | claude-code |
+      | providers[0].status                  | ok          |
+      | providers[0].windows[0].used_percent | 27.0        |
+      | providers[0].windows[1].used_percent | 9.0         |
+    And the fake Claude Code was invoked exactly once
+
+  @wip
+  Scenario: When the CLI cannot answer, the quota is unknown with its reason
+    Given the claude binary is stubbed to fail with exit code 1 and message "claude: not logged in"
+    When the tool "provider__quota" is called with:
+      | provider | claude-code |
+    Then the tool result is not an error
+    And the tool result JSON has:
+      | path                  | value                   |
+      | providers[0].provider | claude-code             |
+      | providers[0].status   | unknown                 |
+      | providers[0].error    | #"(?i).*not logged in.*" |
+      | providers[0].windows  | []                      |
