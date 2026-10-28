@@ -680,7 +680,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | (env CLAUDE_CONFIG_DIR=/tmp/cc-b)  |       |
 
 
-  @wip
   Scenario: the CLI's prompt-too-long result is a context overflow, not a generic error (isaac-166j)
     isaac-work-2 and -3 dead-lettered five hails on 2026-09-20 on a CLI result
     with terminal_reason prompt_too_long, api_error_status 400 and zero usage,

@@ -894,10 +894,11 @@
       (auth-failure? result)))
 
 (defn- weather-kind
-  "Provider weather the CLI reported for itself, in the agent's vocabulary
-   (isaac.agent.drive.provider-wall): a limit is a wall, a login failure is auth."
+  "Classify CLI errors in the agent's vocabulary: prompt length is overflow,
+   subscription limits are walls, and login failures are auth."
   [text]
   (cond
+    (re-find #"(?i)prompt is too long|prompt too long" text) {:error :context-overflow}
     (re-find limit-failure-re text) {:error :rate-limited :reason :wall}
     (re-find cli-auth-failure-re text) {:error :auth-failed :reason :auth}))
 
@@ -908,11 +909,11 @@
                                     [(str (:err result)) (result-error-text events)]))]
     (when-let [kind (weather-kind text)]
       (let [usages (stream-cycle-usages events)]
-        (assoc kind
-               :unavailable? true
-               :message (stderr-head text)
-               :usage (sum-usages usages)
-               :cycle-usages usages)))))
+        (cond-> (assoc kind
+                       :message (stderr-head text)
+                       :usage (sum-usages usages)
+                       :cycle-usages usages)
+          (not= :context-overflow (:error kind)) (assoc :unavailable? true))))))
 
 (defn- cli-start-failed? [result]
   (and (not (zero? (:exit result)))
