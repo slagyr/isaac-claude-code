@@ -6,13 +6,16 @@
     [gherclj.core :as g :refer [defgiven defwhen defthen helper!]]
     [isaac.agent.llm.api.protocol :as api]
     [isaac.agent.llm.providers :as providers]
+    [isaac.agent.quota :as agent-quota]
     [isaac.agent.session.session-steps :as session-steps]
     [isaac.agent.step-tables :as match]
     [isaac.agent.tool.tools-steps :as tools-steps]
     [isaac.foundation.fs :as fs]
+    [isaac.foundation.fs-steps :as fs-steps]
     [isaac.foundation.logger :as log]
     [isaac.foundation.nexus :as nexus]
-    [isaac.provider.claude-code.api.claude-cli :as claude-cli]))
+    [isaac.provider.claude-code.api.claude-cli :as claude-cli]
+    [isaac.provider.claude-code.quota :as quota]))
 
 (helper! isaac.provider.claude-code.claude-cli-steps)
 
@@ -147,6 +150,13 @@
                                            :auth                       "none"
                                            :command                    "claude"
                                            :stream-supports-tool-calls false}))))
+
+;; A provider configured without a turn still needs the real module installed
+;; for quota discovery. Root setup precedes the seeded config; declare on write.
+(fs-steps/register-post-write-hook!
+  (fn [path]
+    (when (str/ends-with? path "/config/providers/claude-code.edn")
+      (declare-module!))))
 
 (defn- install-stub! [f]
   (declare-module!)
@@ -402,7 +412,9 @@
                                          :stream-supports-tool-calls false})
     (claude-cli/clear-stub!)
     (claude-cli/clear-invocations!)
-    (claude-cli/clear-fake-cli!)))
+    (claude-cli/clear-fake-cli!)
+    (quota/clear!)
+    (agent-quota/clear-cache!)))
 
 (g/after-scenario
   (fn []

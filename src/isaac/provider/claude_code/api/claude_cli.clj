@@ -11,7 +11,8 @@
     [isaac.agent.mcp.turns :as mcp-turns]
     [isaac.foundation.config.env :as env]
     [isaac.foundation.logger :as log]
-    [isaac.provider.claude-code.mcp-listener :as mcp-listener]))
+    [isaac.provider.claude-code.mcp-listener :as mcp-listener]
+    [isaac.provider.claude-code.quota :as quota]))
 
 ;; region ----- Test Hooks -----
 
@@ -250,7 +251,7 @@
 
 (defn- parse-json-output [out]
   (try
-    (let [parsed (json/parse-string (str/trim (or out "")) true)]
+    (let [parsed (json/parse-string (or (last (remove str/blank? (str/split-lines (or out "")))) "") true)]
       (if (= "result" (:type parsed))
         {:text  (str (or (:result parsed) ""))
          :usage (normalize-usage (:usage parsed))}
@@ -453,7 +454,7 @@
       (filterv #(= 1 (:cycle %)) script))))
 
 (defn- parse-payload [kind payload]
-  (if (and (#{"tool_use" "usage" "result_usage" "mcp_status"} kind)
+  (if (and (#{"tool_use" "usage" "result_usage" "mcp_status" "rate_limit"} kind)
            (string? payload)
            (str/starts-with? (str/trim payload) "{"))
     (try (json/parse-string payload true)
@@ -574,6 +575,9 @@
         (let [rows                             (cycle-rows script n)
               {:keys [init body result-event]} (cycle-block-events rows)]
           (concat (when (and init (= n (first ns*))) [init])
+                  (keep (fn [{:keys [kind payload]}]
+                          (when (= "rate_limit" kind)
+                            {:type "rate_limit_event" :rate_limit_info (parse-payload kind payload)})) rows)
                   body
                   (when (= n (last ns*))
                     [(assoc result-event :usage result-usage)]))))
@@ -627,7 +631,10 @@
                        [(if last?
                           (assoc result-event :usage (scripted-result-usage script))
                           {:type "result" :result "" :usage {}})])
-                acc* (concat acc init* body tail)]
+                limits (keep (fn [{:keys [kind payload]}]
+                               (when (= "rate_limit" kind)
+                                 {:type "rate_limit_event" :rate_limit_info (parse-payload kind payload)})) rows)
+                acc* (concat acc init* limits body tail)]
             (if (or last? @terminated?*)
               acc*
               (recur (rest remaining) acc*))))))))
@@ -679,7 +686,10 @@
 
       json-out?
       {:exit 0
-       :out  (json/generate-string {:type "result" :result text})
+       :out  (str/join "\n" (map json/generate-string
+                                  (concat (filter #(= "rate_limit_event" (:type %))
+                                                  (script-events rows))
+                                          [{:type "result" :result text}])))
        :err  ""}
 
       :else
@@ -961,6 +971,7 @@
                           {:exit 1 :out "" :err "Claude Code MCP unavailable"}
                           (run-process! argv env input))
                 events  (parse-stream-events (:out result))
+                _       (doseq [event events] (quota/record! (:provider-id cfg) event))
                 init    (init-event events)
                 weather (cli-weather result events)]
             (when driven
@@ -1215,8 +1226,8 @@
 
 ;; region ----- Public API -----
 
-(defn- chat* [request _provider-name cfg]
-  (let [result (invoke! cfg request (driven? request))]
+(defn- chat* [request provider-name cfg]
+  (let [result (invoke! (assoc cfg :provider-id provider-name) request (driven? request))]
     (cond
       (:weather result) (weather-response (:weather result) (:model request))
       (failed? result) (error-response result)
@@ -1261,8 +1272,8 @@
 (defn chat [request provider-name cfg]
   (chat* request provider-name cfg))
 
-(defn chat-stream [request on-chunk _provider-name cfg]
-  (stream-once request on-chunk cfg))
+(defn chat-stream [request on-chunk provider-name cfg]
+  (stream-once request on-chunk (assoc cfg :provider-id provider-name)))
 
 (defn followup-messages [request response tool-calls tool-results]
   (let [assistant-msg {:role "assistant" :content (:content response "")}

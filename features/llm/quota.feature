@@ -35,7 +35,6 @@ Feature: Claude subscription quota from the CLI's own rate-limit events
       | name | crew    |
       | main | thinker |
 
-  @wip
   Scenario: After a turn, the quota reports the windows the CLI announced
     Given a fake Claude Code on the path scripted with:
       | cycle | kind       | payload |
@@ -61,7 +60,6 @@ Feature: Claude subscription quota from the CLI's own rate-limit events
       | providers[0].windows[1].used_percent   | 12.0                 |
       | providers[0].windows[1].resets_at      | 2026-11-02T09:00:00Z |
 
-  @wip
   Scenario: A rejected window is marked limited
     Given a fake Claude Code on the path scripted with:
       | cycle | kind       | payload |
@@ -78,7 +76,6 @@ Feature: Claude subscription quota from the CLI's own rate-limit events
       | providers[0].windows[1].used_percent | 100.0 |
       | providers[0].windows[1].limited      | true  |
 
-  @wip
   Scenario: Before its first turn a provider's quota is unknown
     When the tool "provider__quota" is called with:
       | provider | claude-code |

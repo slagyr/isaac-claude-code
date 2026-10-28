@@ -12,6 +12,9 @@
    :handler isaac.provider.claude-code.mcp-route/handle
    :scope   :mcp}]
 
+ :isaac.agent/quota-meter
+ {:claude-code {:factory isaac.provider.claude-code.quota/factory}}
+
  :isaac.agent/provider-template
  {:claude-code {:template {:api                        "claude-cli"
                       :auth                       "none"
