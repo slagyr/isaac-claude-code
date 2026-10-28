@@ -569,6 +569,11 @@
 (defn fake-claude-code-reports-tools-in-result-only []
   (claude-cli/report-tools-in-result-only!))
 
+(defn claude-quota-memory-cleared []
+  (session-steps/await-turn!)
+  (quota/clear!)
+  (agent-quota/clear-cache!))
+
 (defn fake-claude-code-fails-mcp-init []
   (claude-cli/simulate-mcp-init-failure!))
 
@@ -643,6 +648,8 @@
                                                          (some-> result :error)
                                                          (when (:cancelled? result) :cancelled))))]
     (g/should= expected actual)))
+
+(defwhen "the Claude quota memory is cleared" isaac.provider.claude-code.claude-cli-steps/claude-quota-memory-cleared)
 
 (defgiven "a fake Claude Code on the path scripted with:" isaac.provider.claude-code.claude-cli-steps/fake-claude-code-scripted)
 (defthen "the log has {int} entries with event {string}" isaac.provider.claude-code.claude-cli-steps/log-has-n-entries-with-event

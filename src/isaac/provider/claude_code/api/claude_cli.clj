@@ -669,9 +669,12 @@
                       (remove #(= "tool_use" (:kind %)) script))
         events      (if mcp-config?
                       (simulate-driven-script! script*)
-                      (cycle-events (if (or json-out? mcp-config?)
-                                      rows
-                                      (remove #(= "tool_use" (:kind %)) rows))))]
+                      (concat (keep (fn [{:keys [kind payload]}]
+                                      (when (= "rate_limit" kind)
+                                        {:type "rate_limit_event" :rate_limit_info (parse-payload kind payload)})) rows)
+                              (cycle-events (if (or json-out? mcp-config?)
+                                              rows
+                                              (remove #(= "tool_use" (:kind %)) rows)))))]
     (capture-stdin! in)
     (cond
       (stream-json-without-verbose? arg-map)
@@ -1296,6 +1299,23 @@
   (display-name [_] provider-name)
   (format-tools [_ tools] (when (seq tools) (mapv api/wrapped-function-tool tools)))
   (build-prompt [_ opts] (prompt/build opts)))
+
+(defn probe! [cfg]
+  (let [argv   (into [(command-path cfg)]
+                     (concat (extra-args cfg)
+                             (flag-args true false nil)
+                             ["--model" "haiku" "ok"]))
+        env    (subprocess-env cfg)]
+    (record-invocation! {:argv argv :env env :in ""})
+    (let [{:keys [exit err out]} (run-process! argv env "")
+          events (parse-stream-events out)]
+      (doseq [event events]
+        (quota/record! (:id cfg) event))
+      (when (or (not= 0 exit) (not-any? #(= "rate_limit_event" (:type %)) events))
+        (str "Claude CLI exit " exit ": "
+             (or (not-empty (str/trim (or err "")))
+                 (result-error-text events)
+                 "no rate limit event"))))))
 
 (defn make [name cfg]
   (let [cfg (remembered-config cfg)]

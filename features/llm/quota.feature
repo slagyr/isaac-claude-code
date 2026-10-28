@@ -81,7 +81,6 @@ Feature: Claude subscription quota from the CLI's own rate-limit events
   # snapshot (or one older than 10 minutes) the meter asks the CLI itself —
   # one minimal call, no tools, the provider's own login.
 
-  @wip
   Scenario: The latest snapshot outlives the process that saw it
     Given a fake Claude Code on the path scripted with:
       | cycle | kind       | payload |
@@ -97,7 +96,6 @@ Feature: Claude subscription quota from the CLI's own rate-limit events
       | providers[0].windows[0].used_percent | 31.0  |
     And the fake Claude Code was invoked exactly once
 
-  @wip
   Scenario: With no snapshot the meter asks the CLI once
     Given a fake Claude Code on the path scripted with:
       | cycle | kind       | payload |
@@ -114,7 +112,6 @@ Feature: Claude subscription quota from the CLI's own rate-limit events
       | providers[0].windows[1].used_percent | 9.0         |
     And the fake Claude Code was invoked exactly once
 
-  @wip
   Scenario: When the CLI cannot answer, the quota is unknown with its reason
     Given the claude binary is stubbed to fail with exit code 1 and message "claude: not logged in"
     When the tool "provider__quota" is called with:
