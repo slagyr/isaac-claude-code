@@ -694,3 +694,56 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
     And the log has entries matching:
       | level | event                    | session |
       | :warn | :drive/context-exhausted | main    |
+
+  @wip
+  Scenario: a claude command that cannot be started parks as launch-failed, with the cause on the marker and in the log (isaac-y3wm)
+    On 2026-11-11 a JDK upgrade under a running server broke process spawning
+    ("Cannot run program claude: Failed to exec spawn helper"). For 8.5 hours
+    every driven turn parked as :mcp-unavailable, and nothing on the turn path
+    recorded the real error. A process that cannot be started is weather of
+    its own kind: the turn parks as :launch-failed and carries the message.
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind | payload |
+      | 1     | text | unused  |
+    And the fake Claude Code fails to start with "Cannot run program claude: Failed to exec spawn helper"
+    When the user sends "run it" on session "main"
+    Then the turn result is "suspended"
+    And a turn marker exists for session "main" with:
+      | key       | value                         |
+      | suspended | true                          |
+      | reason    | :launch-failed                |
+      | message   | #"(?s).*Cannot run program.*" |
+    And session "main" has no transcript entry containing "unused"
+    And the log has entries matching:
+      | level | event                | reason         | message                       |
+      | :warn | :claude/turn-weather | :launch-failed | #"(?s).*Cannot run program.*" |
+
+  @wip
+  Scenario: a repeated launch failure escalates to an attention notice that names the cause (isaac-y3wm)
+    The parked-turn notice said only "suspended (mcp-unavailable)", which
+    pointed away from the fix. The notice carries the failure message.
+    Given config:
+      | key                          | value       |
+      | turn.suspended-attention-ms  | 0           |
+      | attention.notify.comm        | discord     |
+      | attention.notify.target      | boiler-room |
+    And a fake Claude Code on the path scripted with:
+      | cycle | kind | payload |
+      | 1     | text | unused  |
+    And the fake Claude Code fails to start with "Cannot run program claude: Failed to exec spawn helper"
+    When the user sends "run it" on session "main" at "2026-04-21T10:00:00Z"
+    Then a turn marker exists for session "main" with:
+      | key           | value          |
+      | reason        | :launch-failed |
+      | suspend-count | 1              |
+    Given the resume sweep runs at "2026-04-21T10:01:00Z"
+    Then a turn marker exists for session "main" with:
+      | key              | value          |
+      | reason           | :launch-failed |
+      | suspend-count    | 2              |
+      | attention-posted | true           |
+    And the only file in "comm/delivery/pending" EDN contains:
+      | path    | value                                              |
+      | comm    | :discord                                           |
+      | target  | boiler-room                                        |
+      | content | contains "launch-failed" and "Cannot run program"  |
