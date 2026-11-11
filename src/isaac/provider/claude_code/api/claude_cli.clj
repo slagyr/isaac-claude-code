@@ -51,6 +51,11 @@
 (defonce ^:private fake-cli* (atom nil))
 (defonce ^:private fake-cycle* (atom 0))
 (defonce ^:private fake-mcp-failure?* (atom false))
+(defonce ^:private fake-launch-failure* (atom nil))
+
+(defn fail-fake-cli-launch! [message]
+  (reset! fake-launch-failure* message))
+
 (defonce ^:private exit-before-stream* (atom nil))
 (defonce ^:private live-process* (atom nil))
 (defonce ^:private terminated?* (atom false))
@@ -90,6 +95,7 @@
   (reset! fake-cli* nil)
   (reset! fake-cycle* 0)
   (reset! fake-mcp-failure?* false)
+  (reset! fake-launch-failure* nil)
   (reset! exit-before-stream* nil)
   (reset! live-process* nil)
   (reset! terminated?* false)
@@ -716,6 +722,14 @@
   (when-let [session-key (:session-key cfg)]
     (bridge-cancel/on-cancel! session-key terminate-cli!)))
 
+(defn- process-launch! [argv env in]
+  (try
+    (when-let [message @fake-launch-failure*]
+      (throw (java.io.IOException. message)))
+    (process/process argv {:env env :err :string :out :string :in (or in "")})
+    (catch java.io.IOException e
+      (throw (ex-info "Claude Code launch failed" {:launch-failed true} e)))))
+
 (defn- run-process! [argv env in]
   (cond
     @stub-state*
@@ -725,10 +739,14 @@
       result)
 
     @fake-cli*
-    (simulate-fake-cli! argv in)
+    (do
+      (when-let [message @fake-launch-failure*]
+        (throw (ex-info "Claude Code launch failed" {:launch-failed true}
+                        (java.io.IOException. message))))
+      (simulate-fake-cli! argv in))
 
     :else
-    (let [p (process/process argv {:env env :err :string :out :string :in (or in "")})]
+    (let [p (process-launch! argv env in)]
       (reset! live-process* p)
       (let [result @p]
         (reset! live-process* nil)
@@ -949,6 +967,12 @@
      :usage          (sum-usages usages)
      :cycle-usages   usages}))
 
+(defn- launch-weather [exception]
+  {:error        :launch-failed
+   :reason       :launch-failed
+   :unavailable? true
+   :message      (.getMessage exception)})
+
 (defn- mcp-init-weather [exception]
   {:error        :mcp-unavailable
    :reason       :mcp-unavailable
@@ -960,8 +984,9 @@
         mcp    (try
                  (when driven (register-mcp-turn! cfg request))
                  (catch Exception e {:init-error e}))]
-    (try
-      (if-let [error (:init-error mcp)]
+    (let [result
+          (try
+            (if-let [error (:init-error mcp)]
         {:weather (mcp-init-weather error)}
         (let [argv  (build-argv cfg request streaming? (:path mcp))
               input (request-stdin cfg request)
@@ -987,12 +1012,19 @@
                               (mcp-failed? init request)))
               (assoc result :weather (mcp-weather result events))
               :else result))))
-      (catch Exception e
-        (if driven
-          {:weather (mcp-init-weather e)}
-          (throw e)))
-      (finally
-        (when (:turn-id mcp) (cleanup-mcp-turn! mcp))))))
+            (catch Exception e
+              (if driven
+                {:weather (if (:launch-failed (ex-data e))
+                            (launch-weather (ex-cause e))
+                            (mcp-init-weather e))}
+                (throw e)))
+            (finally
+              (when (:turn-id mcp) (cleanup-mcp-turn! mcp))))]
+      (when (and driven (:weather result))
+        (log/warn :claude/turn-weather
+                  :reason (get-in result [:weather :reason])
+                  :message (get-in result [:weather :message])))
+      result)))
 
 (defn- stream-json-delta-text [event]
   (let [event (unwrap-stream-event event)

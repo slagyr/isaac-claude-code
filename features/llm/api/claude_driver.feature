@@ -695,7 +695,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | level | event                    | session |
       | :warn | :drive/context-exhausted | main    |
 
-  @wip
   Scenario: a claude command that cannot be started parks as launch-failed, with the cause on the marker and in the log (isaac-y3wm)
     On 2026-11-11 a JDK upgrade under a running server broke process spawning
     ("Cannot run program claude: Failed to exec spawn helper"). For 8.5 hours
@@ -718,7 +717,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | level | event                | reason         | message                       |
       | :warn | :claude/turn-weather | :launch-failed | #"(?s).*Cannot run program.*" |
 
-  @wip
   Scenario: a repeated launch failure escalates to an attention notice that names the cause (isaac-y3wm)
     The parked-turn notice said only "suspended (mcp-unavailable)", which
     pointed away from the fix. The notice carries the failure message.

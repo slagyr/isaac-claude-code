@@ -574,6 +574,9 @@
   (quota/clear!)
   (agent-quota/clear-cache!))
 
+(defn fake-claude-code-fails-to-start [message]
+  (claude-cli/fail-fake-cli-launch! message))
+
 (defn fake-claude-code-fails-mcp-init []
   (claude-cli/simulate-mcp-init-failure!))
 
@@ -656,6 +659,8 @@
   "Counts log entries by :event — the repetition itself is the defect (isaac-8cur).")
 
 (defgiven "the fake Claude Code reports tool calls only in its final result" isaac.provider.claude-code.claude-cli-steps/fake-claude-code-reports-tools-in-result-only)
+(defgiven "the fake Claude Code fails to start with {text:string}"
+  isaac.provider.claude-code.claude-cli-steps/fake-claude-code-fails-to-start)
 (defgiven "the fake Claude Code fails MCP initialization" isaac.provider.claude-code.claude-cli-steps/fake-claude-code-fails-mcp-init)
 (defgiven "the fake Claude Code exits {code:int} before streaming with stderr {text:string}"
   isaac.provider.claude-code.claude-cli-steps/fake-claude-code-exits-before-streaming)

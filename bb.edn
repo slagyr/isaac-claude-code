@@ -23,9 +23,9 @@
                                              :git/sha "edc18481808a050f8c2fd657f2e966e6040fcfc3"
                                              :deps/root "modules/marigold.longwave"}
         io.github.slagyr/isaac-agent {:git/url "https://github.com/slagyr/isaac-agent.git"
-                                      :git/sha "38edce4028ffd1edfd8b572a5d6d3796311e0133"}
+                                      :git/sha "3398c6fbfb758c68812654a7f1ed7268c51f9519"}
         io.github.slagyr/isaac-agent-spec {:git/url "https://github.com/slagyr/isaac-agent.git"
-                                           :git/sha "38edce4028ffd1edfd8b572a5d6d3796311e0133"
+                                           :git/sha "3398c6fbfb758c68812654a7f1ed7268c51f9519"
                                            :deps/root "spec"}
         io.github.slagyr/isaac-http {:git/url "https://github.com/slagyr/isaac-http.git"
                                        :git/sha "4fdd535bb7231fa18d7812c6f0d5b2d35fab740c"}
