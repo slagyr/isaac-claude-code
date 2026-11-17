@@ -58,8 +58,7 @@
   (reset! fake-launch-failure* message))
 
 (defonce ^:private exit-before-stream* (atom nil))
-(defonce ^:private live-process* (atom nil))
-(defonce ^:private terminated?* (atom false))
+(defonce ^:private last-run* (atom nil))
 (defonce ^:private stdin-messages* (atom []))
 (defonce ^:private last-cfg* (atom {}))
 (defonce ^:private last-mcp-config* (atom nil))
@@ -98,8 +97,7 @@
   (reset! fake-mcp-failure?* false)
   (reset! fake-launch-failure* nil)
   (reset! exit-before-stream* nil)
-  (reset! live-process* nil)
-  (reset! terminated?* false)
+  (reset! last-run* nil)
   (reset! stdin-messages* [])
   (reset! last-cfg* {})
   (reset! last-mcp-config* nil)
@@ -123,7 +121,7 @@
   (reset! fake-mcp-failure?* false))
 
 (defn fake-cli-terminated? []
-  @terminated?*)
+  (boolean (some-> @last-run* deref :terminated?)))
 
 (defn- content-as-text [content]
   (cond
@@ -160,7 +158,7 @@
   (reset! fake-cli* script)
   (reset! fake-cycle* 0)
   (reset! stdin-messages* [])
-  (reset! terminated?* false)
+  (reset! last-run* nil)
   (reset! last-mcp-config* nil)
   (reset! fake-mcp-failure?* false))
 
@@ -615,12 +613,12 @@
 (defn- simulate-driven-script!
   "One-process fake: every scripted cycle, MCP tool_use dispatched through the
    drive tool-fn (the registry path), stop if the process was terminated."
-  [script]
+  [script run]
   (let [ns* (or (not-empty (script-cycle-ns script)) [1])]
     (loop [remaining ns*
            acc       []]
       (cond
-        (or (empty? remaining) @terminated?*)
+        (or (empty? remaining) (:terminated? @run))
         (if (some result-shaped? acc)
           acc
           (concat acc [{:type "result" :result "" :usage {}}]))
@@ -649,7 +647,7 @@
                 (catch Exception _))))
           (when (and hook (seq tcs) (not @tools-in-result-only?*))
             (hook :after aside tcs))
-          (let [tail (when (or last? @terminated?*)
+          (let [tail (when (or last? (:terminated? @run))
                        [(if last?
                           (assoc result-event :usage (scripted-result-usage script))
                           {:type "result" :result "" :usage {}})])
@@ -657,7 +655,7 @@
                                (when (= "rate_limit" kind)
                                  {:type "rate_limit_event" :rate_limit_info (parse-payload kind payload)})) rows)
                 acc* (concat acc init* limits body (delta-usage-events rows) tail)]
-            (if (or last? @terminated?*)
+            (if (or last? (:terminated? @run))
               acc*
               (recur (rest remaining) acc*))))))))
 
@@ -678,7 +676,14 @@
   (let [lines (remove str/blank? (str/split-lines (or in "")))]
     (and (seq lines) (not (every? envelope-stdin-line? lines)))))
 
-(defn- simulate-fake-cli! [argv in]
+(defn- new-run []
+  (let [run (atom {:proc nil :terminated? false})]
+    (reset! last-run* run)
+    run))
+
+(defn- simulate-fake-cli!
+  ([argv in] (simulate-fake-cli! argv in (new-run)))
+  ([argv in run]
   (let [script      (or @fake-cli* [])
         n           (swap! fake-cycle* inc)
         rows        (cycle-rows script n)
@@ -690,7 +695,7 @@
                       script
                       (remove #(= "tool_use" (:kind %)) script))
         events      (if mcp-config?
-                      (simulate-driven-script! script*)
+                      (simulate-driven-script! script* run)
                       (concat (keep (fn [{:keys [kind payload]}]
                                       (when (= "rate_limit" kind)
                                         {:type "rate_limit_event" :rate_limit_info (parse-payload kind payload)})) rows)
@@ -720,23 +725,20 @@
       :else
       {:exit 0
        :out  (str/join "\n" (map json/generate-string events))
-       :err  ""})))
+       :err  ""}))))
 
-(defn- terminate-cli! []
-  (when-not @terminated?*
-    (when-let [p @live-process*]
-      (try
-        (let [proc (or (:proc p) p)]
-          (when (instance? java.lang.Process proc)
-            (.destroy proc)))
-        (catch Exception _)))
-    (reset! terminated?* true)
-    (reset! live-process* nil)
-    (log/info :claude/driver-terminated :provider "claude")))
+(defn- destroy-process! [p]
+  (try
+    (let [proc (or (:proc p) p)]
+      (when (instance? java.lang.Process proc)
+        (.destroy proc)))
+    (catch Exception _)))
 
-(defn- install-cancel-hook! [cfg]
-  (when-let [session-key (:session-key cfg)]
-    (bridge-cancel/on-cancel! session-key terminate-cli!)))
+(defn- terminate-run! [run]
+  (let [[before _] (swap-vals! run assoc :terminated? true :proc nil)]
+    (when-not (:terminated? before)
+      (when-let [p (:proc before)] (destroy-process! p))
+      (log/info :claude/driver-terminated :provider "claude"))))
 
 (defn- process-launch! [argv env in]
   (try
@@ -745,6 +747,17 @@
     (process/process argv {:env env :err :string :in (or in "")})
     (catch java.io.IOException e
       (throw (ex-info "Claude Code launch failed" {:launch-failed true} e)))))
+
+(defn- start-process! [run argv env in]
+  (let [p (process-launch! argv env in)
+        [before _] (swap-vals! run (fn [state]
+                                      (if (:terminated? state) state (assoc state :proc p))))]
+    (when (:terminated? before) (destroy-process! p))
+    p))
+
+(defn- install-cancel-hook! [cfg run]
+  (when-let [session-key (:session-key cfg)]
+    (bridge-cancel/on-cancel! session-key #(terminate-run! run))))
 
 (defn- read-lines!
   "Read stdout as it arrives. Keep it for final parsing/usage; a cancelled read
@@ -766,8 +779,8 @@
         (throw e)))))
 
 (defn- run-process!
-  ([argv env in] (run-process! argv env in (fn [_])))
-  ([argv env in on-line]
+  ([run argv env in] (run-process! run argv env in (fn [_])))
+  ([run argv env in on-line]
    (cond
      @stub-state*
      (let [result (@stub-state* {:argv argv :env env :in in})]
@@ -779,19 +792,18 @@
      (let [_      (when-let [message @fake-launch-failure*]
                     (throw (ex-info "Claude Code launch failed" {:launch-failed true}
                                     (java.io.IOException. message))))
-           result (simulate-fake-cli! argv in)]
+           result (simulate-fake-cli! argv in run)]
        (run! on-line (str/split-lines (or (:out result) "")))
        result)
 
      :else
-     (let [p (process-launch! argv env in)]
-       (reset! live-process* p)
+     (let [p (start-process! run argv env in)]
        (try
          (let [out    (read-lines! p on-line)
                result @p]
            {:exit (:exit result) :out out :err (:err result)})
          (finally
-           (reset! live-process* nil)))))))
+           (swap! run assoc :proc nil)))))))
 
 (defn- request-stdin [cfg request]
   (if (driven? request)
@@ -1054,6 +1066,7 @@
   ([cfg request streaming?] (invoke! cfg request streaming? (fn [_])))
   ([cfg request streaming? on-line]
   (let [driven (driven? request)
+        run    (new-run)
         mcp    (try
                  (when driven (register-mcp-turn! cfg request))
                  (catch Exception e {:init-error e}))]
@@ -1065,12 +1078,12 @@
               input (request-stdin cfg request)
               env   (subprocess-env cfg)]
           (when driven (log-title-side-call!))
-          (install-cancel-hook! cfg)
+          (install-cancel-hook! cfg run)
           (capture-stdin! input)
           (record-invocation! {:argv argv :env env :in input})
           (let [result  (if (and driven @fake-mcp-failure?*)
                           {:exit 1 :out "" :err "Claude Code MCP unavailable"}
-                          (run-process! argv env input on-line))
+                          (run-process! run argv env input on-line))
                 events  (parse-stream-events (:out result))
                 _       (doseq [event events] (quota/record! (:provider-id cfg) event))
                 init    (init-event events)
@@ -1261,12 +1274,10 @@
   (reset! drive-tool-fn* tool-fn)
   (try
     (if (cancelled?)
-      (do
-        (terminate-cli!)
-        {:response     nil
-         :tool-calls   []
-         :usage        (empty-turn-usage)
-         :cancelled?   true})
+      {:response     nil
+       :tool-calls   []
+       :usage        (empty-turn-usage)
+       :cancelled?   true}
       (let [tool-calls*        (atom [])
             cycle-n*           (atom 0)
             live-tool-cycles?* (atom false)
@@ -1303,12 +1314,10 @@
                   cancelled  (boolean (cancelled?))]
               (reset! tool-calls* tool-calls)
               (if cancelled
-                (do
-                  (terminate-cli!)
-                  {:response     nil
-                   :tool-calls   tool-calls
-                   :usage        turn-usage
-                   :cancelled?   true})
+                {:response     nil
+                 :tool-calls   tool-calls
+                 :usage        turn-usage
+                 :cancelled?   true}
                 (let [asides (vec (or (:asides response) []))]
                   ;; Replayed tool cycles never met the model: the usage on `response`
                   ;; belongs to the turn's last cycle, not to each replayed one. Carry
@@ -1429,7 +1438,7 @@
                              ["--model" "haiku" "ok"]))
         env    (subprocess-env cfg)]
     (record-invocation! {:argv argv :env env :in ""})
-    (let [{:keys [exit err out]} (run-process! argv env "")
+    (let [{:keys [exit err out]} (run-process! (new-run) argv env "")
           events (parse-stream-events out)]
       (doseq [event events]
         (quota/record! (:id cfg) event))

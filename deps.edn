@@ -94,5 +94,6 @@
                          "-s" "isaac.agent.tool.tools-steps"
                          "-s" "isaac.agent.comm.comm-steps"
                          "-s" "isaac.provider.claude-code.claude-cli-steps"
+                         "-s" "isaac.provider.claude-code.cancel-steps"
                          "-s" "isaac.provider.claude-code.mcp-route-steps"
                          "-t" "~wip"]}}}
