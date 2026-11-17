@@ -734,11 +734,31 @@
         (.destroy proc)))
     (catch Exception _)))
 
+(defn- process-tree [p]
+  (let [proc (or (:proc p) p)]
+    (if (instance? java.lang.Process proc)
+      (vec (iterator-seq (.iterator (.descendants (.toHandle ^java.lang.Process proc)))))
+      [])))
+
 (defn- terminate-run! [run]
-  (let [[before _] (swap-vals! run assoc :terminated? true :proc nil)]
+  (let [[before _] (swap-vals! run assoc :terminated? true)]
     (when-not (:terminated? before)
-      (when-let [p (:proc before)] (destroy-process! p))
+      ;; Capture before SIGTERM: a fast-exiting parent orphans its children.
+      (when-let [p (:proc before)]
+        (swap! run assoc :kids (process-tree p))
+        (destroy-process! p))
       (log/info :claude/driver-terminated :provider "claude"))))
+
+(defn- reap-cancelled! [run p]
+  (let [proc (:proc p)
+        kids (distinct (concat (:kids @run) (process-tree p)))]
+    (future
+      (try
+        (when-not (.waitFor ^java.lang.Process proc 2500 java.util.concurrent.TimeUnit/MILLISECONDS)
+          (.destroyForcibly ^java.lang.Process proc))
+        (finally
+          (doseq [^java.lang.ProcessHandle kid kids]
+            (try (.destroyForcibly kid) (catch Exception _))))))))
 
 (defn- process-launch! [argv env in]
   (try
@@ -799,9 +819,12 @@
      :else
      (let [p (start-process! run argv env in)]
        (try
-         (let [out    (read-lines! p on-line)
-               result @p]
-           {:exit (:exit result) :out out :err (:err result)})
+         (let [out (read-lines! p on-line)]
+           (if (:terminated? @run)
+             (do (reap-cancelled! run p)
+                 {:exit 143 :out out :err ""})
+             (let [result @p]
+               {:exit (:exit result) :out out :err (:err result)})))
          (finally
            (swap! run assoc :proc nil)))))))
 
@@ -888,9 +911,11 @@
    is silence, not zero: a cycle that says nothing must not overwrite what the
    cycle before it measured (isaac-ewxh)."
   [event]
-  (let [u (or (:usage event)
+  (let [unwrapped (unwrap-stream-event event)
+        u (or (:usage event)
               (get-in event [:message :usage])
-              (get-in (unwrap-stream-event event) [:usage]))]
+              (:usage unwrapped)
+              (get-in unwrapped [:message :usage]))]
     (when (map? u)
       (if (contains? u :prompt-tokens) u (parse-cli-usage u)))))
 
@@ -1062,6 +1087,11 @@
    :unavailable? true
    :message      (.getMessage exception)})
 
+(defn- cancelled-response [events]
+  (let [usages (stream-cycle-usages events)]
+    {:error :cancelled :cancelled? true :message "cancelled"
+     :usage (sum-usages usages) :cycle-usages usages}))
+
 (defn- invoke!
   ([cfg request streaming?] (invoke! cfg request streaming? (fn [_])))
   ([cfg request streaming? on-line]
@@ -1092,6 +1122,7 @@
               (when init (log-mcp-status! init))
               (log-driver-exit! result events))
             (cond
+              (:terminated? @run) (assoc result :cancelled (cancelled-response events))
               weather (assoc result :weather weather)
               (and driven (or (cli-start-failed? result)
                               (cli-error? result)
@@ -1353,6 +1384,7 @@
 (defn- chat* [request provider-name cfg]
   (let [result (invoke! (assoc cfg :provider-id provider-name) request (driven? request))]
     (cond
+      (:cancelled result) (assoc (:cancelled result) :model (:model request))
       (:weather result) (weather-response (:weather result) (:model request))
       (failed? result) (error-response result)
       (driven? request) (parse-stream-json-response (:out result) (:model request))
@@ -1373,9 +1405,13 @@
                      (invoke! cfg request true (live-deltas on-chunk))
                      (invoke! cfg request false))
         json?      (not streaming?)]
-    (if-let [weather (:weather result)]
-      (weather-response weather (:model request))
-      (if-not (failed? result)
+    (cond
+      (:cancelled result)
+      (assoc (:cancelled result) :model (:model request)
+             :content (str/join (:deltas (parse-stream-json-output
+                                           (str/split-lines (or (:out result) ""))))))
+      (:weather result) (weather-response (:weather result) (:model request))
+      :else (if-not (failed? result)
         (if json?
         (let [{:keys [text usage]} (parse-json-output (:out result))
               response {:content text :model (:model request) :stop-reason :end-turn :tool-calls [] :usage usage}]

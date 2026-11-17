@@ -112,7 +112,58 @@
                          {:command (.getPath script) :stream-non-tool-turns true :forward-env [] :session-key "live-cancel"})
         (finally (bridge-cancel/clear!)))
       (should= ["partial"] @chunks)
-      (should (< (- (System/currentTimeMillis) start) 5000)))))
+      (should (< (- (System/currentTimeMillis) start) 5000))))
+
+  (it "a cancel ends the turn at once even when claude takes seconds to exit on SIGTERM"
+    (let [script (io/file @dir "graceful-claude")
+          _      (spit script (str "#!/bin/sh\n"
+                                   "trap 'sleep 3; exit 143' TERM\n"
+                                   "cat >/dev/null\n"
+                                   "printf '%s\\n' " (sh-quote (text-line "partial")) "\n"
+                                   "sleep 5 & wait $!\n"))
+          _      (.setExecutable script true)
+          _      (bridge-cancel/begin-turn! "graceful-cancel")
+          chunks (atom [])
+          cancel-at (atom nil)]
+      (try
+        (sut/chat-stream {:model "sonnet" :messages [{:role "user" :content "hi"}]}
+                         (fn [{:keys [text-delta]}]
+                           (when text-delta
+                             (swap! chunks conj text-delta)
+                             (when-not @cancel-at
+                               (reset! cancel-at (System/currentTimeMillis))
+                               (bridge-cancel/cancel! "graceful-cancel"))))
+                         "claude"
+                         {:command (.getPath script) :stream-non-tool-turns true :forward-env [] :session-key "graceful-cancel"})
+        (finally (bridge-cancel/clear!)))
+      (should= ["partial"] @chunks)
+      (should (< (- (System/currentTimeMillis) @cancel-at) 100))))
+
+  (it "a cancelled claude that ignores SIGTERM is killed after the grace period"
+    (let [script  (io/file @dir "stubborn-claude")
+          pidfile (io/file @dir "pid")
+          _       (spit script (str "#!/bin/sh\n"
+                                    "trap '' TERM\n"
+                                    "cat >/dev/null\n"
+                                    "echo $$ > " (sh-quote (.getPath pidfile)) "\n"
+                                    "printf '%s\\n' " (sh-quote (text-line "partial")) "\n"
+                                    "i=0; while [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done\n"))
+          _       (.setExecutable script true)
+          _       (bridge-cancel/begin-turn! "stubborn-cancel")
+          start   (System/currentTimeMillis)]
+      (try
+        (sut/chat-stream {:model "sonnet" :messages [{:role "user" :content "hi"}]}
+                         (fn [{:keys [text-delta]}] (when text-delta (bridge-cancel/cancel! "stubborn-cancel")))
+                         "claude"
+                         {:command (.getPath script) :stream-non-tool-turns true :forward-env [] :session-key "stubborn-cancel"})
+        (finally (bridge-cancel/clear!)))
+      (should (< (- (System/currentTimeMillis) start) 1500))
+      (let [pid   (parse-long (str/trim (slurp pidfile)))
+            alive #(.orElse (.map (java.lang.ProcessHandle/of pid)
+                                  (reify java.util.function.Function (apply [_ h] (.isAlive h))))
+                            false)]
+        (loop [i 0] (when (and (alive) (< i 60)) (Thread/sleep 100) (recur (inc i))))
+        (should-not (alive))))))
 
 
 (defn- se [event] {:type "stream_event" :event event})
