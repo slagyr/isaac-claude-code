@@ -76,7 +76,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | cycle-start | 2     |
       | cycle-start | 3     |
 
-  @wip
   Scenario: text and thinking deltas reach the comm in order; thinking persists as reckoning and stays out of the next prompt
     Given a fake Claude Code on the path scripted with:
       | cycle | kind     | payload                 |
@@ -127,7 +126,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | event                    | provider |
       | :claude/driver-terminated | claude   |
 
-  @wip
   Scenario: prior turns ride in the live prompt envelope before the live prompt
     Given a fake Claude Code on the path scripted with:
       | cycle | kind | payload |
@@ -351,7 +349,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | name | last-input-tokens | turn-input-tokens |
       | main | 370               | 950               |
 
-  @wip
   Scenario: stdin carries stream-json user envelopes, never bare role/content lines (isaac-6z4r)
     The real CLI (2.1.236) ignores a bare {"role":…,"content":…} line, reads
     EOF and exits 0 with no output. Every stdin line must be
@@ -746,7 +743,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | target  | boiler-room                                        |
       | content | contains "launch-failed" and "Cannot run program"  |
 
-  @wip
   Scenario: history rides in the live prompt's envelope, so Claude Code runs one turn (isaac-hehh)
     Claude Code runs a model turn per stdin envelope. History in an envelope
     of its own cost a hidden extra request on every turn, whose reply was
@@ -765,7 +761,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | type | message.role | message.content                                                                               |
       | user | user         | #"(?s).*<conversation_history>.*User: one.*Assistant: first.*</conversation_history>.*two.*" |
 
-  @wip
   Scenario: a first turn is one plain envelope with no history block (isaac-hehh)
     Given a fake Claude Code on the path scripted with:
       | cycle | kind | payload |
@@ -776,7 +771,6 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | type | message.role | message.content |
       | user | user         | hello           |
 
-  @wip
   Scenario: one request's usage counts once though two events carry it (isaac-hehh)
     With --include-partial-messages the real CLI reports a request's usage on
     its assistant event and again on the stream_event message_delta. Counting

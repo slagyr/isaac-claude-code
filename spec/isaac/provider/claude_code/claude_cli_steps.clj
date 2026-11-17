@@ -597,6 +597,10 @@
                            (:rows table))]
         (g/should= expected actual)))))
 
+(defn fake-claude-code-received-stdin-lines [n]
+  (session-steps/await-turn!)
+  (g/should= n (count (claude-cli/fake-cli-stdin))))
+
 (defn fake-claude-code-received-no-bare-stdin-lines []
   (session-steps/await-turn!)
   (let [actual (claude-cli/fake-cli-stdin)]
@@ -665,6 +669,8 @@
 (defgiven "the fake Claude Code exits {code:int} before streaming with stderr {text:string}"
   isaac.provider.claude-code.claude-cli-steps/fake-claude-code-exits-before-streaming)
 (defthen "the fake Claude Code received on stdin:" isaac.provider.claude-code.claude-cli-steps/fake-claude-code-received-on-stdin)
+(defthen "the fake Claude Code received {n:int} stdin lines"
+  isaac.provider.claude-code.claude-cli-steps/fake-claude-code-received-stdin-lines)
 (defthen "the fake Claude Code received no bare stdin lines" isaac.provider.claude-code.claude-cli-steps/fake-claude-code-received-no-bare-stdin-lines)
 (defthen "the MCP config handed to the fake Claude Code names server {name:string} as HTTP:"
   isaac.provider.claude-code.claude-cli-steps/mcp-config-names-http-server)

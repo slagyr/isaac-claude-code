@@ -388,14 +388,65 @@
       (let [in     (:in (first (sut/invocations)))
             lines  (str/split-lines in)
             parsed (map #(json/parse-string % true) lines)]
-        (should= 2 (count parsed))
+        (should= 1 (count parsed))
         (doseq [evt parsed]
           (should= "user" (:type evt))
-          (should= "user" (get-in evt [:message :role]))
-          (should (string? (get-in evt [:message :content]))))
-        (should (re-find #"(?s).*one.*first.*" (get-in (first parsed) [:message :content])))
-        (should= "two" (get-in (last parsed) [:message :content]))
+          (should= "user" (get-in evt [:message :role])))
         (should-not (some #(and (contains? % :role) (not (contains? % :type))) parsed)))))
+
+  (it "sends history and the live prompt as one envelope, so Claude Code runs one turn, not two"
+    (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "second"}])
+    (let [api (sut/make "claude" {:command "claude" })]
+      (api/chat api {:model    "sonnet"
+                     :tools    [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "system" :content "be brief"}
+                                {:role "user" :content "one"}
+                                {:role "assistant" :content "first"}
+                                {:role "user" :content "two"}]})
+      (let [lines   (str/split-lines (:in (first (sut/invocations))))
+            content (get-in (json/parse-string (first lines) true) [:message :content])]
+        (should= 1 (count lines))
+        (should (string? content))
+        (should (re-find #"(?s)<conversation_history>.*User: one.*Assistant: first.*</conversation_history>.*two" content))
+        (should-not (re-find #"be brief" content)))))
+
+  (it "sends a first turn as one plain-text envelope with no history block"
+    (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "hi"}])
+    (let [api (sut/make "claude" {:command "claude" })]
+      (api/chat api {:model    "sonnet"
+                     :tools    [{:type "function" :function {:name "exec__run"}}]
+                     :messages [{:role "user" :content "hello"}]})
+      (let [lines (str/split-lines (:in (first (sut/invocations))))]
+        (should= 1 (count lines))
+        (should= "hello" (get-in (json/parse-string (first lines) true) [:message :content])))))
+
+  (it "counts each API request once though message_start, assistant and message_delta all carry its usage"
+    (let [u   (fn [in cr cw out] {:input_tokens in :cache_read_input_tokens cr
+                                  :cache_creation_input_tokens cw :output_tokens out})
+          out (ndjson [{:type "stream_event" :event {:type "message_start" :message {:id "msg_A" :usage (u 3 100 20 1)}}}
+                       {:type "assistant" :message {:id "msg_A" :role "assistant" :usage (u 3 100 20 1)
+                                                    :content [{:type "text" :text "let me look"}]}}
+                       {:type "assistant" :message {:id "msg_A" :role "assistant" :usage (u 3 100 20 1)
+                                                    :content [{:type "tool_use" :id "t1" :name "mcp__isaac__exec__run"
+                                                               :input {:command "ls"}}]}}
+                       {:type "stream_event" :event {:type "message_delta" :usage (u 3 100 20 30)}}
+                       {:type "stream_event" :event {:type "message_start" :message {:id "msg_B" :usage (u 5 150 0 1)}}}
+                       {:type "assistant" :message {:id "msg_B" :role "assistant" :usage (u 5 150 0 1)
+                                                    :content [{:type "text" :text "done"}]}}
+                       {:type "stream_event" :event {:type "message_delta" :usage (u 5 150 0 12)}}
+                       {:type "result" :is_error false :stop_reason "end_turn" :result "done"
+                        :usage (u 8 250 20 42)}])]
+      (sut/set-stub! (constantly {:exit 0 :out out :err ""}))
+      (log/capture-logs
+        (let [api      (sut/make "claude" {:command "claude" })
+              _        (api/chat api {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+                                      :messages [{:role "user" :content "go"}]})
+              exit-log (first (filter #(= :claude/driver-exit (:event %)) @log/captured-logs))]
+          (should= 2 (:cycles exit-log))
+          (should= 8 (:input-tokens exit-log))
+          (should= 250 (:cache-read-tokens exit-log))
+          (should= 20 (:cache-write-tokens exit-log))
+          (should= 42 (:output-tokens exit-log))))))
 
   (it "fake CLI emits nothing when stdin has a bare role/content line"
     (sut/set-fake-cli! [{:cycle 1 :kind "text" :payload "ok"}])
