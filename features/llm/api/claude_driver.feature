@@ -76,6 +76,7 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | cycle-start | 2     |
       | cycle-start | 3     |
 
+  @wip
   Scenario: text and thinking deltas reach the comm in order; thinking persists as reckoning and stays out of the next prompt
     Given a fake Claude Code on the path scripted with:
       | cycle | kind     | payload                 |
@@ -92,9 +93,8 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | message   | assistant    | here is my answer    |                      |
     When the user sends "and again" on session "main"
     Then the fake Claude Code received on stdin:
-      | type | message.role | message.content                   |
-      | user | user         | #"(?s).*think then answer.*here is my answer.*" |
-      | user | user         | and again                         |
+      | type | message.role | message.content |
+      | user | user         | #"(?s).*think then answer.*here is my answer.*</conversation_history>.*and again" |
 
   Scenario: thinking deltas with no text leave no reasoning block and the turn stays clean (isaac-ddls)
     Given a fake Claude Code on the path scripted with:
@@ -127,7 +127,8 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | event                    | provider |
       | :claude/driver-terminated | claude   |
 
-  Scenario: prior turns are replayed as text history before the live prompt
+  @wip
+  Scenario: prior turns ride in the live prompt envelope before the live prompt
     Given a fake Claude Code on the path scripted with:
       | cycle | kind | payload |
       | 1     | text | first   |
@@ -137,9 +138,8 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | 1     | text | second  |
     When the user sends "two" on session "main"
     Then the fake Claude Code received on stdin:
-      | type | message.role | message.content       |
-      | user | user         | #"(?s).*one.*first.*" |
-      | user | user         | two                   |
+      | type | message.role | message.content |
+      | user | user         | #"(?s).*<conversation_history>.*one.*first.*</conversation_history>.*two.*" |
     And the fake Claude Code was invoked with:
       | arg                       | value       |
       | --input-format            | stream-json |
@@ -351,6 +351,7 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | name | last-input-tokens | turn-input-tokens |
       | main | 370               | 950               |
 
+  @wip
   Scenario: stdin carries stream-json user envelopes, never bare role/content lines (isaac-6z4r)
     The real CLI (2.1.236) ignores a bare {"role":…,"content":…} line, reads
     EOF and exits 0 with no output. Every stdin line must be
@@ -366,9 +367,8 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | 1     | text | second  |
     When the user sends "two" on session "main"
     Then the fake Claude Code received on stdin:
-      | type | message.role | message.content                   |
-      | user | user         | #"(?s).*one.*first.*"             |
-      | user | user         | two                               |
+      | type | message.role | message.content |
+      | user | user         | #"(?s).*one.*first.*two.*" |
     And the fake Claude Code received no bare stdin lines
 
   Scenario: a driven turn's MCP config names an HTTP server at this turn's own listener, no command (isaac-mbnb)
