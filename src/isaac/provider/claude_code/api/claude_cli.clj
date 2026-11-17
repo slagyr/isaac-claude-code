@@ -745,8 +745,13 @@
     (when-not (:terminated? before)
       ;; Capture before SIGTERM: a fast-exiting parent orphans its children.
       (when-let [p (:proc before)]
-        (swap! run assoc :kids (process-tree p))
-        (destroy-process! p))
+        (let [kids (process-tree p)]
+          (swap! run assoc :kids kids)
+          ;; Background children inherit stdout on Linux. Killing the shell
+          ;; alone leaves read-lines! blocked until they close that pipe.
+          (doseq [^java.lang.ProcessHandle kid (reverse kids)]
+            (try (.destroy kid) (catch Exception _)))
+          (destroy-process! p)))
       (log/info :claude/driver-terminated :provider "claude"))))
 
 (defn- reap-cancelled! [run p]
