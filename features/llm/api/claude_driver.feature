@@ -745,3 +745,54 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
       | comm    | :discord                                           |
       | target  | boiler-room                                        |
       | content | contains "launch-failed" and "Cannot run program"  |
+
+  @wip
+  Scenario: history rides in the live prompt's envelope, so Claude Code runs one turn (isaac-hehh)
+    Claude Code runs a model turn per stdin envelope. History in an envelope
+    of its own cost a hidden extra request on every turn, whose reply was
+    thrown away, and its old instructions read as live ones (found by Zane
+    Lab, 2026-11-16: two result events per turn, one after the fix).
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind | payload |
+      | 1     | text | first   |
+    When the user sends "one" on session "main"
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind | payload |
+      | 1     | text | second  |
+    When the user sends "two" on session "main"
+    Then the fake Claude Code received 1 stdin lines
+    And the fake Claude Code received on stdin:
+      | type | message.role | message.content                                                                               |
+      | user | user         | #"(?s).*<conversation_history>.*User: one.*Assistant: first.*</conversation_history>.*two.*" |
+
+  @wip
+  Scenario: a first turn is one plain envelope with no history block (isaac-hehh)
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind | payload |
+      | 1     | text | hi      |
+    When the user sends "hello" on session "main"
+    Then the fake Claude Code received 1 stdin lines
+    And the fake Claude Code received on stdin:
+      | type | message.role | message.content |
+      | user | user         | hello           |
+
+  @wip
+  Scenario: one request's usage counts once though two events carry it (isaac-hehh)
+    With --include-partial-messages the real CLI reports a request's usage on
+    its assistant event and again on the stream_event message_delta. Counting
+    both logged two cycles and double tokens for a one-request turn. The
+    figures are cumulative within a request, so the request counts once, at
+    the largest value of each field.
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind        | payload                                                                                               |
+      | 1     | tool_use    | {"name":"exec__run","input":{"command":"echo one"}}                                                   |
+      | 1     | usage       | {"input_tokens":200,"output_tokens":3,"cache_read_input_tokens":50,"cache_creation_input_tokens":10}  |
+      | 1     | delta_usage | {"input_tokens":200,"output_tokens":7,"cache_read_input_tokens":50,"cache_creation_input_tokens":10}  |
+      | 2     | text        | done                                                                                                  |
+      | 2     | usage       | {"input_tokens":260,"output_tokens":2,"cache_read_input_tokens":60,"cache_creation_input_tokens":0}   |
+      | 2     | delta_usage | {"input_tokens":260,"output_tokens":9,"cache_read_input_tokens":60,"cache_creation_input_tokens":0}   |
+    When the user sends "run it" on session "main"
+    Then the response is "done"
+    And the log has entries matching:
+      | event               | provider | cycles | input-tokens | cache-read-tokens | cache-write-tokens | output-tokens |
+      | :claude/driver-exit | claude   | 2      | 460          | 110               | 10                 | 16            |
