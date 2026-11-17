@@ -1,6 +1,9 @@
 (ns isaac.provider.claude-code.claude-driver-spec
   (:require
     [cheshire.core :as json]
+    [clojure.edn :as edn]
+    [isaac.agent.bridge.cancellation :as bridge-cancel]
+    [isaac.foundation.cli.host :as host]
     [clojure.string :as str]
     [isaac.agent.llm.api.protocol :as api]
     [isaac.agent.llm.tool-loop :as tool-loop]
@@ -21,6 +24,15 @@
 
 (defn- result-line [text u]
   {:type "result" :result text :usage u})
+
+(defn- driven-turn! []
+  (api/chat (sut/make "claude" {:command "claude"})
+            {:model "sonnet" :tools [{:type "function" :function {:name "exec__run"}}]
+             :messages [{:role "user" :content "hi"}]}))
+
+(defn- mode [file]
+  (java.nio.file.attribute.PosixFilePermissions/toString
+    (java.nio.file.Files/getPosixFilePermissions (.toPath file) (make-array java.nio.file.LinkOption 0))))
 
 (describe "claude-cli LoopDriver"
 
@@ -504,6 +516,82 @@
                      :messages [{:role "user" :content "hi"}]})))
       (should= 1 (count @stopped))
       (should= @stopped @cleared)))
+
+  (context "private MCP config lifetime"
+    (it "uses a 0600 file in a distinct 0700 directory while running and removes it after reply"
+      (let [seen (atom nil)]
+        (sut/set-stub! (fn [inv]
+                         (let [file (java.io.File. (nth (:argv inv) (inc (.indexOf (:argv inv) "--mcp-config"))))]
+                           (reset! seen {:path file :file-mode (mode file) :dir-mode (mode (.getParentFile file))
+                                         :parent (.getCanonicalPath (.getParentFile file))}))
+                         {:exit 0 :out (ndjson [{:type "result" :result "ok"}]) :err ""}))
+        (driven-turn!)
+        (should= "rw-------" (:file-mode @seen))
+        (should= "rwx------" (:dir-mode @seen))
+        (should-not= (.getCanonicalPath (java.io.File. (System/getProperty "java.io.tmpdir"))) (:parent @seen))
+        (should-not (.exists (:path @seen)))))
+
+    (it "removes config after process error, exception, and cancellation"
+      (doseq [outcome [:error :exception :cancel]]
+        (let [path (atom nil)]
+          (sut/set-stub! (fn [inv]
+                           (reset! path (java.io.File. (nth (:argv inv) (inc (.indexOf (:argv inv) "--mcp-config")))))
+                           (case outcome
+                             :exception (throw (java.io.IOException. "no claude"))
+                             :cancel (do (bridge-cancel/cancel! "mcp-spec") {:exit 143 :out "" :err ""})
+                             {:exit 1 :out "" :err "error"})))
+          (when (= outcome :cancel) (bridge-cancel/begin-turn! "mcp-spec"))
+          (try (driven-turn!) (finally (bridge-cancel/clear!)))
+          (should-not (.exists @path)))))
+
+    (it "stops the listener and removes a partial file if writing fails"
+      (let [stopped (atom [])
+            path    (atom nil)]
+        (with-redefs [mcp-listener/start! (fn [_] {:url "http://127.0.0.1:7000" :nonce "reef"})
+                      mcp-listener/stop! #(swap! stopped conj %)
+                      spit (fn [file & _]
+                             (reset! path (java.io.File. file))
+                             (throw (java.io.IOException. "disk full")))]
+          (driven-turn!))
+        (should= 1 (count @stopped))
+        (should-not (.exists @path))))
+
+    (it "removes two in-flight configs on SIGTERM in a real JVM without module factory wiring"
+      (let [deps    (edn/read-string (slurp "deps.edn"))
+            config  (pr-str {:paths ["src"] :deps (merge (:deps deps) (get-in deps [:aliases :spec :extra-deps]))})
+            process (.start (ProcessBuilder. ["clojure" "-Sdeps" config "-M" "-e"
+                                              (slurp "test-resources/mcp_shutdown.clj")]))
+            paths   (try
+                      (let [reader (java.io.BufferedReader. (java.io.InputStreamReader. (.getInputStream process)))
+                            a (.readLine reader)
+                            b (.readLine reader)]
+                        (when (and a b (str/starts-with? a "/") (str/starts-with? b "/"))
+                          [(java.io.File. a) (java.io.File. b)]))
+                      (finally (.destroy process)
+                               (when-not (.waitFor process 10 java.util.concurrent.TimeUnit/SECONDS)
+                                 (.destroyForcibly process))))]
+        (should= 2 (count paths))
+        (doseq [file paths]
+          (should-not (.exists file)))
+        (should-not (.exists (.getParentFile (first paths))))))
+
+    (it "registers cleanup on the process host even when a turn has an embedded host"
+      (let [hooks (atom [])
+            path (atom nil)]
+        (some-> @@#'sut/mcp-config-dir* java.nio.file.Files/deleteIfExists)
+        (reset! @#'sut/mcp-config-dir* nil)
+        (reset! @#'sut/shutdown-cleanup-registered?* false)
+        (with-redefs [host/on-shutdown! (fn [f] (swap! hooks conj [host/*host* f]))]
+          (binding [host/*host* (host/embedded-host {})]
+            (sut/set-stub! (fn [inv]
+                             (reset! path (java.io.File. (nth (:argv inv) (inc (.indexOf (:argv inv) "--mcp-config")))))
+                             ((second (first @hooks)))
+                             {:exit 1 :out "" :err ""}))
+            (driven-turn!)))
+        (reset! @#'sut/shutdown-cleanup-registered?* false)
+        (should= 1 (count @hooks))
+        (should (identical? host/process-host (ffirst @hooks)))
+        (should-not (.exists @path)))))
 
   (it "omits the tool protocol contract from --system-prompt on a driven turn"
     (sut/set-fake-cli! [{:cycle 1 :kind "tool_use" :payload "{\"name\":\"exec__run\",\"input\":{\"command\":\"echo hi\"}}"}

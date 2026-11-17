@@ -10,6 +10,7 @@
     [isaac.agent.llm.prompt.builder :as prompt]
     [isaac.agent.llm.tool-loop :as tool-loop]
     [isaac.agent.mcp.turns :as mcp-turns]
+    [isaac.foundation.cli.host :as host]
     [isaac.foundation.config.env :as env]
     [isaac.foundation.logger :as log]
     [isaac.provider.claude-code.mcp-listener :as mcp-listener]
@@ -380,19 +381,68 @@
               :name oauth-token-env
               :message "no token will be passed to claude")))
 
+(defn- posix-attr [perms]
+  (java.nio.file.attribute.PosixFilePermissions/asFileAttribute
+    (java.nio.file.attribute.PosixFilePermissions/fromString perms)))
+
+(def ^:private no-follow (into-array java.nio.file.LinkOption [java.nio.file.LinkOption/NOFOLLOW_LINKS]))
+(defonce ^:private mcp-config-dir* (atom nil))
+(defonce ^:private live-mcp-configs* (atom #{}))
+(defonce ^:private shutdown-cleanup-registered?* (atom false))
+
+(defn- delete-mcp-config! [path]
+  (when path
+    (try
+      (java.nio.file.Files/deleteIfExists (.toPath (java.io.File. ^String path)))
+      (catch Exception e
+        (log/warn :claude/mcp-config-delete-failed :error (.getMessage e))))
+    (swap! live-mcp-configs* disj path)))
+
+(defn- delete-mcp-configs! []
+  (locking mcp-config-dir*
+    (run! delete-mcp-config! @live-mcp-configs*)
+    (when-let [dir @mcp-config-dir*]
+      (try (java.nio.file.Files/deleteIfExists dir) (catch Exception _)))))
+
+(defn- register-shutdown-cleanup! []
+  (when (compare-and-set! shutdown-cleanup-registered?* false true)
+    (try
+      ;; CLI-server turns may bind an embedded host. Its cancellation is not process shutdown.
+      (binding [host/*host* host/process-host]
+        (host/on-shutdown! delete-mcp-configs!))
+      (catch Exception e
+        (reset! shutdown-cleanup-registered?* false)
+        (throw e)))))
+
+(defn- mcp-config-dir []
+  (locking mcp-config-dir*
+    (let [dir @mcp-config-dir*]
+      (if (and dir (java.nio.file.Files/isDirectory dir no-follow))
+        dir
+        (do
+          (register-shutdown-cleanup!)
+          (reset! mcp-config-dir*
+                  (java.nio.file.Files/createTempDirectory
+                    "isaac-mcp-" (into-array java.nio.file.attribute.FileAttribute [(posix-attr "rwx------")]))))))))
+
 (defn- write-mcp-config!
-  "The MCP config Claude Code reads: an HTTP server naming this turn's own
-   loopback listener, with the per-turn nonce in the Authorization header —
-   Claude Code's Streamable-HTTP MCP client talks to it directly, no stdio
-   bridge process in between (isaac-mbnb)."
+  "Write a private per-turn bearer config in a private per-process directory."
   [url nonce]
-  (let [file (java.io.File/createTempFile "isaac-mcp-" ".json")
+  (let [file (java.nio.file.Files/createTempFile
+               (mcp-config-dir) "turn-" ".json"
+               (into-array java.nio.file.attribute.FileAttribute [(posix-attr "rw-------")]))
+        path (str (.toAbsolutePath file))
         body {:mcpServers {:isaac {:type    "http"
                                    :url     url
                                    :headers {:Authorization (str "Bearer " nonce)}}}}]
-    (spit file (json/generate-string body))
-    (reset! last-mcp-config* {:path (.getAbsolutePath file) :body body})
-    (.getAbsolutePath file)))
+    (swap! live-mcp-configs* conj path)
+    (try
+      (spit path (json/generate-string body))
+      (reset! last-mcp-config* {:path path :body body})
+      path
+      (catch Exception e
+        (delete-mcp-config! path)
+        (throw e)))))
 
 (defn- isaac-tool-name [name]
   (let [s (str name)]
@@ -416,13 +466,15 @@
       (let [{:keys [url nonce]} (mcp-listener/start! turn-id)]
         {:turn-id turn-id :nonce nonce :path (write-mcp-config! url nonce)})
       (catch Exception e
+        (try (mcp-listener/stop! turn-id) (catch Exception _))
         (mcp-turns/clear! turn-id)
         (throw e)))))
 
-(defn- cleanup-mcp-turn! [{:keys [turn-id]}]
+(defn- cleanup-mcp-turn! [{:keys [turn-id path]}]
   (when turn-id
     (try (mcp-listener/stop! turn-id) (catch Exception _))
-    (try (mcp-turns/clear! turn-id) (catch Exception _))))
+    (try (mcp-turns/clear! turn-id) (catch Exception _))
+    (delete-mcp-config! path)))
 
 (defn- build-argv [cfg request streaming? mcp-config-path]
   (let [driven  (driven? request)
