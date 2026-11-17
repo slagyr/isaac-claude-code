@@ -790,3 +790,73 @@ Feature: Claude Code drives the tool loop against isaac's MCP tools (isaac-5xn7)
     And the log has entries matching:
       | event               | provider | cycles | input-tokens | cache-read-tokens | cache-write-tokens | output-tokens |
       | :claude/driver-exit | claude   | 2      | 460          | 110               | 10                 | 16            |
+
+  Scenario: a reply streams in four chunks when the turn offers tools (isaac-ftrd)
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind       | payload   |
+      | 1     | text_delta | "Three "   |
+      | 1     | text_delta | moorings,  |
+      | 1     | text_delta | " all"    |
+      | 1     | text_delta | " sound." |
+    When the user sends "count the moorings" on session "main" via memory comm
+    Then the response streams as "Three " "moorings," " all" " sound."
+    And the memory comm has events matching:
+      | event   | text       |
+      | chatter | #"Three $" |
+      | chatter | moorings,  |
+      | chatter | #" all$"  |
+      | chatter | #" sound\.$" |
+      | reply   | Three moorings, all sound. |
+    And the response is "Three moorings, all sound."
+    And session "main" has transcript matching:
+      | type    | message.role | message.content             |
+      | message | assistant    | Three moorings, all sound. |
+    And the fake Claude Code was invoked exactly once
+
+  Scenario: a comm without streaming receives the complete reply once (isaac-ftrd)
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind       | payload   |
+      | 1     | text_delta | "Three " |
+      | 1     | text_delta | moorings, |
+      | 1     | text_delta | " all"  |
+      | 1     | text_delta | " sound." |
+    And the Claude Code provider does not stream turns with tools
+    When the user sends "count the moorings" on session "main" via memory comm
+    Then the memory comm receives one chatter event with text "Three moorings, all sound."
+    And the memory comm receives one reply event with text "Three moorings, all sound."
+    And session "main" has transcript matching:
+      | type    | message.role | message.content             |
+      | message | assistant    | Three moorings, all sound. |
+
+  Scenario: an aside before a tool call is stored once on the streaming path (isaac-ftrd)
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind     | payload                                                        |
+      | 1     | text     | Checking.                                                      |
+      | 1     | tool_use | {"name":"mcp__isaac__exec__run","input":{"command":"echo hi"}} |
+      | 2     | text     | Done.                                                          |
+    When the user sends "check the gauge" on session "main" via memory comm
+    Then the response is "Done."
+    And the memory comm has events matching:
+      | event | text      |
+      | aside | Checking. |
+      | reply | Done.     |
+    And session "main" has transcript matching:
+      | type    | message.role | message.content |
+      | message | assistant    | Done.           |
+    And session "main" has no transcript entry containing "Checking."
+    And the memory comm receives one aside event with text "Checking."
+    And the fake Claude Code was invoked exactly once
+
+  Scenario: streaming sends one request and keeps its usage (isaac-ftrd)
+    Given a fake Claude Code on the path scripted with:
+      | cycle | kind       | payload                                                                       |
+      | 1     | text_delta | Hello                                                                         |
+      | 1     | text_delta | world                                                                         |
+      | 1     | usage      | {"input_tokens":3,"output_tokens":9,"cache_read_input_tokens":0,"cache_creation_input_tokens":0} |
+    When the user sends "hello" on session "main"
+    Then the response is "Helloworld"
+    And the fake Claude Code was invoked exactly once
+    And the fake Claude Code received 1 stdin lines
+    And the log has entries matching:
+      | event               | provider | cycles | output-tokens |
+      | :claude/driver-exit | claude   | 1      | 9             |

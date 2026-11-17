@@ -149,7 +149,7 @@
       (providers/register! "claude-code" {:api                        "claude-cli"
                                            :auth                       "none"
                                            :command                    "claude"
-                                           :stream-supports-tool-calls false}))))
+                                           :stream-supports-tool-calls true}))))
 
 ;; A provider configured without a turn still needs the real module installed
 ;; for quota discovery. Root setup precedes the seeded config; declare on write.
@@ -409,7 +409,7 @@
     (providers/register! "claude-code" {:api                        "claude-cli"
                                          :auth                       "none"
                                          :command                    "claude"
-                                         :stream-supports-tool-calls false})
+                                         :stream-supports-tool-calls true})
     (claude-cli/clear-stub!)
     (claude-cli/clear-invocations!)
     (claude-cli/clear-fake-cli!)
@@ -542,7 +542,12 @@
           (let [m (zipmap (:headers table) row)]
             {:cycle   (parse-long (str (get m "cycle")))
              :kind    (str (get m "kind"))
-             :payload (str (get m "payload"))}))
+             :payload (let [raw (str (get m "payload"))]
+                        (if (and (= "text_delta" (get m "kind"))
+                                 (str/starts-with? raw "\"")
+                                 (str/ends-with? raw "\""))
+                          (edn/read-string raw)
+                          raw))}))
         (:rows table)))
 
 (defn fake-claude-code-scripted [table]
@@ -553,10 +558,20 @@
   (api/register! :claude-cli claude-cli/make)
   (g/update! :provider-configs #(assoc (or % {}) "claude-code" {:api "claude-cli"
                                                                   :command "claude"
-                                                                  :stream-supports-tool-calls false}))
+                                                                  :stream-supports-tool-calls true}))
   (claude-cli/clear-invocations!)
   (claude-cli/clear-stub!)
   (claude-cli/set-fake-cli! (parse-script-table table)))
+
+(defn claude-code-does-not-stream-tool-turns []
+  (g/update! :provider-configs #(assoc-in % ["claude-code" :stream-supports-tool-calls] false)))
+
+(defn memory-comm-receives-one-event-with-text [event text]
+  (session-steps/await-turn!)
+  (let [events (some-> (g/get :memory-comm-events) deref)]
+    (g/should= [text] (->> events
+                           (filter #(= event (:event %)))
+                           (mapv :text)))))
 
 (defn log-has-n-entries-with-event [n event]
   (let [want (-> (str event)
@@ -659,6 +674,10 @@
 (defwhen "the Claude quota memory is cleared" isaac.provider.claude-code.claude-cli-steps/claude-quota-memory-cleared)
 
 (defgiven "a fake Claude Code on the path scripted with:" isaac.provider.claude-code.claude-cli-steps/fake-claude-code-scripted)
+(defgiven "the Claude Code provider does not stream turns with tools"
+  isaac.provider.claude-code.claude-cli-steps/claude-code-does-not-stream-tool-turns)
+(defthen "the memory comm receives one {event:string} event with text {text:string}"
+  isaac.provider.claude-code.claude-cli-steps/memory-comm-receives-one-event-with-text)
 (defthen "the log has {int} entries with event {string}" isaac.provider.claude-code.claude-cli-steps/log-has-n-entries-with-event
   "Counts log entries by :event — the repetition itself is the defect (isaac-8cur).")
 

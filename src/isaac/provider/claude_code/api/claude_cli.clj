@@ -2,6 +2,7 @@
   (:require
     [babashka.process :as process]
     [cheshire.core :as json]
+    [clojure.java.io :as io]
     [clojure.string :as str]
     [isaac.agent.bridge.cancellation :as bridge-cancel]
     [isaac.agent.llm.api.protocol :as api]
@@ -741,33 +742,56 @@
   (try
     (when-let [message @fake-launch-failure*]
       (throw (java.io.IOException. message)))
-    (process/process argv {:env env :err :string :out :string :in (or in "")})
+    (process/process argv {:env env :err :string :in (or in "")})
     (catch java.io.IOException e
       (throw (ex-info "Claude Code launch failed" {:launch-failed true} e)))))
 
-(defn- run-process! [argv env in]
-  (cond
-    @stub-state*
-    (let [stub @stub-state*
-          result (stub {:argv argv :env env :in in})]
-      (attach-out! {:argv argv :env env :in in} (:out result))
-      result)
+(defn- read-lines!
+  "Read stdout as it arrives. Keep it for final parsing/usage; a cancelled read
+   may close early. On callback failure, close the producer rather than leaving
+   it blocked on an unread pipe."
+  [p on-line]
+  (let [out (StringBuilder.)]
+    (try
+      (with-open [reader (io/reader (:out p))]
+        (doseq [line (line-seq reader)]
+          (.append out line)
+          (.append out "\n")
+          (on-line line)))
+      (str out)
+      (catch java.io.IOException _
+        (str out))
+      (catch Throwable e
+        (process/destroy-tree p)
+        (throw e)))))
 
-    @fake-cli*
-    (do
-      (when-let [message @fake-launch-failure*]
-        (throw (ex-info "Claude Code launch failed" {:launch-failed true}
-                        (java.io.IOException. message))))
-      (simulate-fake-cli! argv in))
+(defn- run-process!
+  ([argv env in] (run-process! argv env in (fn [_])))
+  ([argv env in on-line]
+   (cond
+     @stub-state*
+     (let [result (@stub-state* {:argv argv :env env :in in})]
+       (attach-out! {:argv argv :env env :in in} (:out result))
+       (run! on-line (str/split-lines (or (:out result) "")))
+       result)
 
-    :else
-    (let [p (process-launch! argv env in)]
-      (reset! live-process* p)
-      (let [result @p]
-        (reset! live-process* nil)
-        {:exit (:exit result)
-         :out  (:out result)
-         :err  (:err result)}))))
+     @fake-cli*
+     (let [_      (when-let [message @fake-launch-failure*]
+                    (throw (ex-info "Claude Code launch failed" {:launch-failed true}
+                                    (java.io.IOException. message))))
+           result (simulate-fake-cli! argv in)]
+       (run! on-line (str/split-lines (or (:out result) "")))
+       result)
+
+     :else
+     (let [p (process-launch! argv env in)]
+       (reset! live-process* p)
+       (try
+         (let [out    (read-lines! p on-line)
+               result @p]
+           {:exit (:exit result) :out out :err (:err result)})
+         (finally
+           (reset! live-process* nil)))))))
 
 (defn- request-stdin [cfg request]
   (if (driven? request)
@@ -1026,7 +1050,9 @@
    :unavailable? true
    :message      (.getMessage exception)})
 
-(defn- invoke! [cfg request streaming?]
+(defn- invoke!
+  ([cfg request streaming?] (invoke! cfg request streaming? (fn [_])))
+  ([cfg request streaming? on-line]
   (let [driven (driven? request)
         mcp    (try
                  (when driven (register-mcp-turn! cfg request))
@@ -1044,7 +1070,7 @@
           (record-invocation! {:argv argv :env env :in input})
           (let [result  (if (and driven @fake-mcp-failure?*)
                           {:exit 1 :out "" :err "Claude Code MCP unavailable"}
-                          (run-process! argv env input))
+                          (run-process! argv env input on-line))
                 events  (parse-stream-events (:out result))
                 _       (doseq [event events] (quota/record! (:provider-id cfg) event))
                 init    (init-event events)
@@ -1071,7 +1097,7 @@
         (log/warn :claude/turn-weather
                   :reason (get-in result [:weather :reason])
                   :message (get-in result [:weather :message])))
-      result)))
+      result))))
 
 (defn- stream-json-delta-text [event]
   (let [event (unwrap-stream-event event)
@@ -1217,6 +1243,13 @@
       (assoc :stop-reason (if (seq tool-calls) :tool-use :end-turn))
       (assoc :tool-calls tool-calls)))
 
+(defn- restore-reply [response]
+  ;; Isaac's stream-response! replaces content with all deltas, including tool
+  ;; asides already recorded on earlier cycles. Keep only the final cycle.
+  (if (contains? response ::reply)
+    (-> response (assoc :content (::reply response)) (dissoc ::reply))
+    response))
+
 (defn claude-loop-driver
   "Provider-driven tool loop for claude-cli. One CLI process per turn: chat-fn
    is invoked once and runs to the result event. MCP tools execute through the
@@ -1256,7 +1289,7 @@
                              (fire-start!))
                     nil)))
         (fire-start!)
-        (let [response (chat-fn request)]
+        (let [response (restore-reply (chat-fn request))]
           (if (or (:error response) (:unavailable? response))
             response
             (let [tool-calls (mapv (fn [tc]
@@ -1317,9 +1350,19 @@
       :else (let [{:keys [text usage]} (parse-json-output (:out result))]
               {:content text :model (:model request) :stop-reason :end-turn :tool-calls [] :usage usage}))))
 
+(defn- live-deltas [on-chunk]
+  (fn [line]
+    (when-let [event (stream-json-event line)]
+      (when-let [think (not-empty (stream-json-delta-thinking event))]
+        (on-chunk {:reasoning-delta think}))
+      (when-let [text (not-empty (stream-json-delta-text event))]
+        (on-chunk {:text-delta text})))))
+
 (defn- stream-once [request on-chunk cfg]
   (let [streaming? (or (driven? request) (:stream-non-tool-turns cfg) (:streamNonToolTurns cfg))
-        result     (invoke! cfg request streaming?)
+        result     (if streaming?
+                     (invoke! cfg request true (live-deltas on-chunk))
+                     (invoke! cfg request false))
         json?      (not streaming?)]
     (if-let [weather (:weather result)]
       (weather-response weather (:model request))
@@ -1336,15 +1379,15 @@
               content (or (not-empty (str/join deltas))
                           (:content parsed)
                           "")]
-          (doseq [think reasoning]
-            (when (seq think)
-              (on-chunk {:reasoning-delta think})))
-          (doseq [delta deltas]
-            (when (seq delta)
-              (on-chunk {:text-delta delta})))
+          ;; Older Claude streams can carry text only in assistant messages.
+          ;; Forward that final reply once when there were no live text deltas.
+          (when (and (empty? deltas) (seq (:content parsed)))
+            (on-chunk {:text-delta (:content parsed)}))
           (let [response (if (seq (:tool-calls parsed))
                            parsed
                            {:content content :model (:model request) :stop-reason :end-turn :tool-calls [] :usage usage})
+                response (cond-> response
+                           (driven? request) (assoc ::reply (:content response)))
                 think    (str/join reasoning)]
             (if (str/blank? think)
               (dissoc response :reasoning)

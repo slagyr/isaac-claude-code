@@ -19,7 +19,7 @@
  {:claude-code {:template {:api                        "claude-cli"
                       :auth                       "none"
                       :command                    "claude"
-                      :stream-supports-tool-calls false}
+                      :stream-supports-tool-calls true}
            :schema   {:env
                       {:type        :map
                        :description "Environment for the spawned CLI, merged over the inherited one. Set CLAUDE_CONFIG_DIR to give this provider its own subscription login."

@@ -23,7 +23,7 @@ results) and report.
 
 **What it is.** A `providers` table entry becomes a Claude Code provider by
 setting `type: claude-code` — it inherits a template (`api: claude-cli`,
-`auth: none`, `command: claude`, `stream-supports-tool-calls: false`) the same way any provider inherits from a
+`auth: none`, `command: claude`, `stream-supports-tool-calls: true`) the same way any provider inherits from a
 manifest-declared template (`isaac.agent`, Providers, models, and effort).
 The entity's own **id** is whatever you name it — it does not have to be
 `claude-code` itself; a provider named `harbor` with `type: claude-code`
