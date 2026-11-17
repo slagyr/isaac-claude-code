@@ -1,5 +1,5 @@
 {:id       :isaac.provider.claude-code
- :version  "0.3.0"
+ :version  "0.3.1"
  :factory  isaac.foundation.module.protocol/module
  :handbook "isaac/provider/claude_code/handbook.md"
 
